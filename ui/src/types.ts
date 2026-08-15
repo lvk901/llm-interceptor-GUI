@@ -61,6 +61,8 @@ export interface RuntimeObservability {
   heartbeat_at: string;
   heartbeat_sequence: number;
   uptime_seconds: number;
+  proxy_running: boolean;
+  proxy_uptime_seconds: number;
   latest_log_sequence: number;
   logs: RuntimeLogEntry[];
 }

@@ -42,10 +42,19 @@ export const RuntimeControlBar: React.FC<{
 
         <div className="flex items-center gap-1 border-l border-slate-200 pl-3 dark:border-slate-700">
           {runtime.proxy_running ? (
-            <ActionButton label="Stop proxy" disabled={isBusy} onClick={() => onAction('proxy/stop')}><Power size={14} /></ActionButton>
+            <ActionButton label="Stop proxy" active disabled={isBusy} onClick={() => onAction('proxy/stop')}>
+              <Power size={14} />
+              <span>Stop proxy</span>
+            </ActionButton>
           ) : (
-            <ActionButton label="Start proxy" accent disabled={isBusy} onClick={() => onAction('proxy/start')}><Power size={14} /></ActionButton>
+            <ActionButton label="Start proxy" accent disabled={isBusy} onClick={() => onAction('proxy/start')}>
+              <Power size={14} />
+              <span>Start proxy</span>
+            </ActionButton>
           )}
+        </div>
+
+        <div className="flex items-center gap-1 border-l border-slate-200 pl-3 dark:border-slate-700">
           <ActionButton
             label={runtime.recording ? 'Stop recording' : 'Start recording'}
             disabled={isBusy || !runtime.proxy_running}
@@ -53,6 +62,7 @@ export const RuntimeControlBar: React.FC<{
             onClick={() => onAction(runtime.recording ? 'recording/stop' : 'recording/start')}
           >
             {runtime.recording ? <Square size={13} fill="currentColor" /> : <Circle size={14} />}
+            <span>{runtime.recording ? 'Stop recording' : 'Start recording'}</span>
           </ActionButton>
         </div>
 

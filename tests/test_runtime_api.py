@@ -52,6 +52,8 @@ class FakeRuntime:
             heartbeat_at="2026-08-15T12:00:00+00:00",
             heartbeat_sequence=1,
             uptime_seconds=42,
+            proxy_running=self.proxy_running,
+            proxy_uptime_seconds=42 if self.proxy_running else 0,
             latest_log_sequence=1,
             logs=[],
         )
@@ -131,6 +133,8 @@ def test_runtime_api_exposes_observability_and_settings(tmp_path: Path) -> None:
     assert observability.status_code == 200
     assert observability.json()["heartbeat_sequence"] == 1
     assert observability.json()["uptime_seconds"] == 42
+    assert observability.json()["proxy_running"] is False
+    assert observability.json()["proxy_uptime_seconds"] == 0
 
     settings = client.put(
         "/api/runtime/settings",

@@ -2,8 +2,18 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Activity, ChevronDown, ChevronUp, Radio, TerminalSquare } from 'lucide-react';
 import type { RuntimeObservability } from '../../types';
 
+const PANEL_OPEN_STORAGE_KEY = 'lli.runtimePanel.open';
+
+function readInitialPanelState(): boolean {
+  try {
+    return window.localStorage.getItem(PANEL_OPEN_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 export const RuntimeObservabilityPanel: React.FC<{ observability: RuntimeObservability }> = ({ observability }) => {
-  const [isOpen, setIsOpen] = useState(true);
+  const [isOpen, setIsOpen] = useState(readInitialPanelState);
   const terminalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -15,6 +25,18 @@ export const RuntimeObservabilityPanel: React.FC<{ observability: RuntimeObserva
     ? new Date(observability.heartbeat_at).toLocaleTimeString()
     : '--:--:--';
 
+  const togglePanel = () => {
+    setIsOpen((value) => {
+      const next = !value;
+      try {
+        window.localStorage.setItem(PANEL_OPEN_STORAGE_KEY, String(next));
+      } catch {
+        // The panel remains usable if browser storage is unavailable.
+      }
+      return next;
+    });
+  };
+
   return (
     <section className="runtime-terminal shrink-0 border-t border-slate-700 bg-[#101820] text-slate-200 dark:border-slate-700 dark:bg-[#080d13]">
       <div className="flex h-9 items-center gap-3 px-3">
@@ -23,11 +45,16 @@ export const RuntimeObservabilityPanel: React.FC<{ observability: RuntimeObserva
         <span className="flex items-center gap-1 font-mono text-[10px] text-emerald-300">
           <Radio size={11} className="animate-pulse" /> HEARTBEAT {heartbeatTime}
         </span>
-        <span className="ml-auto font-mono text-[10px] text-slate-500">UP {formatDuration(observability.uptime_seconds)}</span>
+        <span className={`ml-auto font-mono text-[10px] ${observability.proxy_running ? 'text-emerald-300' : 'text-slate-500'}`}>
+          {observability.proxy_running
+            ? `PROXY UP ${formatDuration(observability.proxy_uptime_seconds)}`
+            : 'PROXY OFF'}
+        </span>
         <button
           type="button"
           aria-label={isOpen ? 'Collapse live runtime' : 'Expand live runtime'}
-          onClick={() => setIsOpen((value) => !value)}
+          aria-expanded={isOpen}
+          onClick={togglePanel}
           className="inline-flex h-7 w-7 items-center justify-center text-slate-400 hover:bg-white/10 hover:text-white"
         >
           {isOpen ? <ChevronDown size={15} /> : <ChevronUp size={15} />}

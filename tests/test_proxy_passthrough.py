@@ -96,3 +96,19 @@ def test_non_json_unmatched_upload_is_not_parsed() -> None:
     )
 
     assert addon._should_parse_unmatched_request(flow) is False
+
+
+def test_passthrough_activity_is_limited_per_host(monkeypatch) -> None:
+    addon, _ = make_addon()
+    now = 100.0
+    monkeypatch.setattr("lli.proxy.time.monotonic", lambda: now)
+
+    addon._log_passthrough_activity("GET", "https://video.example/one?secret=value")
+    addon._log_passthrough_activity("GET", "https://video.example/two?secret=value")
+
+    assert addon._passthrough_log_times == {"video.example": 100.0}
+
+    now += 3.0
+    addon._log_passthrough_activity("GET", "https://video.example/three")
+
+    assert addon._passthrough_log_times == {"video.example": 103.0}

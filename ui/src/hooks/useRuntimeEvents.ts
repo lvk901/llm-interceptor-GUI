@@ -5,6 +5,8 @@ const EMPTY_OBSERVABILITY: RuntimeObservability = {
   heartbeat_at: '',
   heartbeat_sequence: 0,
   uptime_seconds: 0,
+  proxy_running: false,
+  proxy_uptime_seconds: 0,
   latest_log_sequence: 0,
   logs: [],
 };

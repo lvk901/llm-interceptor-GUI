@@ -13,10 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Model website profiles** - Added configurable capture profiles for ChatGPT, Claude, Gemini, DeepSeek, Kimi, Qwen, Doubao, and Zhipu web applications.
 - **Relay API recognition** - Added hostname-independent detection for versioned OpenAI-compatible endpoints and JSON request bodies containing model input.
 - **Codex Responses API stream support** - Added reconstruction of `response.*` SSE events, preserving completed response output and rebuilding `response.output_text.delta` text when an upstream relay omits the final object.
+- **Proxy uptime visibility** - Added an independent proxy running state and uptime indicator to the desktop live panel.
 
 ### Changed
 
 - **Non-model traffic pass-through** - Large downloads, range responses, and media content that do not match a model request are streamed without buffering or recording; live proxy summaries now focus on captured model traffic.
+- **Bounded pass-through activity logs** - Non-model activity is now rate-limited per host and displayed without URL paths or query parameters. The desktop live panel also preserves its collapsed state between launches.
 
 ### Fixed
 

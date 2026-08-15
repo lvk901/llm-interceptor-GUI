@@ -160,6 +160,8 @@ class RuntimeObservabilityStatus(BaseModel):
     heartbeat_at: str
     heartbeat_sequence: int
     uptime_seconds: int
+    proxy_running: bool
+    proxy_uptime_seconds: int
     latest_log_sequence: int
     logs: list[RuntimeLogLine]
 
@@ -778,6 +780,8 @@ def create_app(watch_manager: WatchManager, runtime: ProxyRuntime | None = None)
             heartbeat_at=snapshot.heartbeat_at,
             heartbeat_sequence=snapshot.heartbeat_sequence,
             uptime_seconds=snapshot.uptime_seconds,
+            proxy_running=snapshot.proxy_running,
+            proxy_uptime_seconds=snapshot.proxy_uptime_seconds,
             latest_log_sequence=snapshot.latest_log_sequence,
             logs=[RuntimeLogLine(**entry.__dict__) for entry in snapshot.logs],
         )

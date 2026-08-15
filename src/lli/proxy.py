@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from mitmproxy import http
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 
 MAX_UNMATCHED_REQUEST_BODY_BYTES = 1024 * 1024
 STREAM_PASSTHROUGH_MIN_BYTES = 256 * 1024
+PASSTHROUGH_LOG_INTERVAL_SECONDS = 3.0
 STREAM_PASSTHROUGH_CONTENT_TYPES = (
     "audio/",
     "font/",
@@ -82,6 +84,7 @@ class WatchAddon:
         self._request_ids: dict[int, str] = {}
         self._request_sessions: dict[int, str | None] = {}
         self._capture_decisions: dict[int, bool] = {}
+        self._passthrough_log_times: dict[str, float] = {}
 
     def request(self, flow: http.HTTPFlow) -> None:
         """Handle an outgoing request."""
@@ -98,6 +101,7 @@ class WatchAddon:
             should_capture = self.url_filter.should_capture(url, body)
 
         if not should_capture:
+            self._log_passthrough_activity(method, url)
             self._logger.debug("URL not matched, skipping: %s", url)
             return
 
@@ -252,6 +256,24 @@ class WatchAddon:
             return int(headers.get("content-length", "0")) >= STREAM_PASSTHROUGH_MIN_BYTES
         except ValueError:
             return False
+
+    def _log_passthrough_activity(self, method: str, url: str) -> None:
+        """Show bounded non-model connection activity without logging every media segment."""
+        host = urlsplit(url).netloc or "unknown-host"
+        now = time.monotonic()
+        last_logged = self._passthrough_log_times.get(host)
+        if last_logged is not None and now - last_logged < PASSTHROUGH_LOG_INTERVAL_SECONDS:
+            return
+
+        if len(self._passthrough_log_times) >= 512:
+            cutoff = now - PASSTHROUGH_LOG_INTERVAL_SECONDS
+            self._passthrough_log_times = {
+                name: timestamp
+                for name, timestamp in self._passthrough_log_times.items()
+                if timestamp >= cutoff
+            }
+        self._passthrough_log_times[host] = now
+        self._logger.info("[PASS] %s %s", method, host)
 
     def tls_failed_server(self, data: TlsData) -> None:
         """Log TLS handshake failures with server context."""

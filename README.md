@@ -99,6 +99,8 @@ codex
 
 This is useful for Codex and other CLI tools when you want to capture only their traffic while browsers and other local software keep their existing network route.
 
+The desktop live panel shows backend heartbeat and proxy uptime separately. It keeps its collapsed or expanded state between launches. Non-model pass-through activity is shown at a bounded per-host rate and omits URL paths and query parameters, so media segment traffic does not overwhelm the log view or expose request parameters.
+
 ## 🚀 Quick Start
 
 ### 1. Install Certificate (For HTTPS Capture Only)

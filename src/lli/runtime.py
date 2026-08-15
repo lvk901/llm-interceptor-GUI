@@ -53,6 +53,8 @@ class RuntimeObservabilitySnapshot:
     heartbeat_at: str
     heartbeat_sequence: int
     uptime_seconds: int
+    proxy_running: bool
+    proxy_uptime_seconds: int
     latest_log_sequence: int
     logs: list[RuntimeLogEntry]
 
@@ -84,6 +86,7 @@ class ProxyRuntime:
         self._lock = threading.RLock()
         self._started = threading.Event()
         self._last_error: str | None = None
+        self._proxy_started_at: datetime | None = None
         self._initialized = False
         self._enabled_site_profiles = list(config.filter.site_profiles or DEFAULT_MODEL_SITE_IDS)
         self._logger = get_logger()
@@ -143,10 +146,19 @@ class ProxyRuntime:
             logs = [entry for entry in self._logs if entry.sequence > after_sequence]
             latest_log_sequence = self._log_sequence
             heartbeat_sequence = self._heartbeat_sequence
+            proxy_running = self._thread is not None and self._thread.is_alive()
+            proxy_started_at = self._proxy_started_at
+        proxy_uptime_seconds = (
+            max(0, int((now - proxy_started_at).total_seconds()))
+            if proxy_running and proxy_started_at is not None
+            else 0
+        )
         return RuntimeObservabilitySnapshot(
             heartbeat_at=now.isoformat(),
             heartbeat_sequence=heartbeat_sequence,
             uptime_seconds=max(0, int((now - self._started_at).total_seconds())),
+            proxy_running=proxy_running,
+            proxy_uptime_seconds=proxy_uptime_seconds,
             latest_log_sequence=latest_log_sequence,
             logs=logs,
         )
@@ -185,6 +197,8 @@ class ProxyRuntime:
         except Exception:
             self.stop_proxy()
             raise
+        with self._lock:
+            self._proxy_started_at = datetime.now(timezone.utc)
         return self.snapshot()
 
     def _run_proxy(self) -> None:
@@ -232,6 +246,7 @@ class ProxyRuntime:
         with self._lock:
             self._master = None
             self._thread = None
+            self._proxy_started_at = None
         self.system_proxy.deactivate()
         if self._initialized:
             self.watch_manager.shutdown()
