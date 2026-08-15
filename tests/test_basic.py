@@ -205,7 +205,7 @@ class TestURLFilterGlob:
 
     def test_glob_add_at_runtime(self) -> None:
         """Test adding glob patterns at runtime."""
-        config = FilterConfig(include_patterns=[])
+        config = FilterConfig(include_patterns=[], auto_detect_api_paths=False)
         url_filter = URLFilter(config)
 
         # Initially no match
@@ -220,6 +220,7 @@ class TestURLFilterGlob:
         config = FilterConfig(
             include_patterns=[],
             include_globs=["*api?.example.com*"],
+            auto_detect_api_paths=False,
         )
         url_filter = URLFilter(config)
         assert url_filter.should_capture("https://api1.example.com/v1")

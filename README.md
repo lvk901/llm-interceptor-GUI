@@ -17,10 +17,15 @@
 - **Watch Mode** - Interactive continuous capture with session management
 - **Transparent Inspection** - See exactly what prompts are sent and what responses are received
 - **Streaming Support** - Captures both streaming (SSE) and non-streaming API responses
+- **Responses API Support** - Rebuilds OpenAI Responses API streams used by Codex, including `response.output_text.delta` events
 - **Multi-Provider** - Works with Anthropic, OpenAI, Google, Groq, Together, Mistral, and more
+- **Model Website Profiles** - Capture the API traffic behind ChatGPT, Claude, Gemini, DeepSeek, Kimi, Qwen, Doubao, and Zhipu web apps
+- **Relay Recognition** - Detect OpenAI-compatible relay APIs from versioned paths and JSON request shapes, even when the hostname is custom
 - **Automatic Masking** - Protects API keys and sensitive data in logs
 - **Auto Processing** - Automatically merges and splits session data
 - **Cross-Platform** - Works on Windows, macOS, and Linux
+- **Windows Desktop App** - One-click proxy and recording controls, runtime settings, live logs, and backend heartbeat
+- **Efficient Pass-through** - Streams unmatched media and large downloads without buffering them for inspection
 
 
 
@@ -64,6 +69,36 @@ pip install -e .[dev]
 lli-dev-setup
 ```
 
+### Windows desktop app
+
+The portable desktop build embeds the web UI and the local proxy controller in one executable.
+
+```bash
+uv sync --extra desktop --dev
+python build_ui.py
+python build_desktop.py
+```
+
+The output is `dist/LLM Interceptor.exe`. The first certificate installation asks for Windows
+permission to trust the mitmproxy root certificate for the current user.
+
+When the desktop app is running:
+
+1. Install the HTTPS certificate once from the app when prompted.
+2. Start the proxy. It configures the current user's Windows system proxy to `127.0.0.1:9090`.
+3. Start recording before beginning a model conversation, then stop recording to save and process the session.
+4. Use **Settings** to choose model website profiles and configure relay recognition. Stop the proxy before changing website profiles or the proxy port.
+
+The proxy forwards ordinary traffic as well. Unmatched media responses and large downloads are streamed through without being buffered or written to model traces. For the least impact on unrelated applications, direct only the application under test to LLI instead of enabling the Windows system proxy:
+
+```powershell
+$env:HTTP_PROXY = 'http://127.0.0.1:9090'
+$env:HTTPS_PROXY = 'http://127.0.0.1:9090'
+codex
+```
+
+This is useful for Codex and other CLI tools when you want to capture only their traffic while browsers and other local software keep their existing network route.
+
 ## 🚀 Quick Start
 
 ### 1. Install Certificate (For HTTPS Capture Only)
@@ -106,6 +141,8 @@ If you need to capture traffic to a **custom or self-hosted API** , use `--inclu
 ```bash
 lli watch --include "*api.example.com*"
 ```
+
+LLI also recognizes common OpenAI-compatible relay paths such as `/v1/chat/completions` and `/v1/responses`. For non-standard paths, relay recognition captures JSON requests that include a `model` field together with LLM input fields such as `messages`, `input`, or `prompt`.
 
 In watch mode:
 - **Press Enter** to start recording a session

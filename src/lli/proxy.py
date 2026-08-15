@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Callable
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from io import StringIO
@@ -33,6 +34,19 @@ from lli.logger import (
 
 if TYPE_CHECKING:
     from lli.watch import WatchManager
+
+
+MAX_UNMATCHED_REQUEST_BODY_BYTES = 1024 * 1024
+STREAM_PASSTHROUGH_MIN_BYTES = 256 * 1024
+STREAM_PASSTHROUGH_CONTENT_TYPES = (
+    "audio/",
+    "font/",
+    "image/",
+    "video/",
+    "application/octet-stream",
+    "application/vnd.apple.mpegurl",
+    "application/dash+xml",
+)
 
 
 class WatchAddon:
@@ -67,6 +81,7 @@ class WatchAddon:
         self._request_times: dict[int, float] = {}
         self._request_ids: dict[int, str] = {}
         self._request_sessions: dict[int, str | None] = {}
+        self._capture_decisions: dict[int, bool] = {}
 
     def request(self, flow: http.HTTPFlow) -> None:
         """Handle an outgoing request."""
@@ -75,21 +90,24 @@ class WatchAddon:
 
         self._logger.debug("Intercepted request: %s %s", method, url)
 
-        # Determine if we should capture this request
         should_capture = self.url_filter.should_capture(url)
-
-        # Log summary for all requests
-        log_request_summary(method, url, captured=should_capture)
-
-        # Generate unique request ID and track timing for all requests
-        request_id = str(uuid4())
-        flow_id = id(flow)
-        self._request_ids[flow_id] = request_id
-        self._request_times[flow_id] = time.time()
+        body = None
+        if not should_capture and self._should_parse_unmatched_request(flow):
+            # Inspect JSON relay payloads without decoding uploads or binary application traffic.
+            body = self._parse_body(flow.request.content, flow.request.headers.get("content-type"))
+            should_capture = self.url_filter.should_capture(url, body)
 
         if not should_capture:
             self._logger.debug("URL not matched, skipping: %s", url)
             return
+
+        # Generate IDs, capture timing, and emit live logs only for model traffic.
+        request_id = str(uuid4())
+        flow_id = id(flow)
+        self._request_ids[flow_id] = request_id
+        self._request_times[flow_id] = time.time()
+        self._capture_decisions[flow_id] = True
+        log_request_summary(method, url, captured=True)
 
         # Capture current session ID for this request
         session_id = self.watch_manager.current_session_id
@@ -97,9 +115,6 @@ class WatchAddon:
 
         # Parse headers (with masking)
         headers = self._mask_headers(dict(flow.request.headers))
-
-        # Parse body
-        body = self._parse_body(flow.request.content, flow.request.headers.get("content-type"))
 
         # Mask sensitive body fields if configured
         if body and isinstance(body, dict):
@@ -125,27 +140,19 @@ class WatchAddon:
         method = flow.request.method
         status_code = flow.response.status_code
 
-        # Determine if we should capture this response
-        should_capture = self.url_filter.should_capture(url)
-
         flow_id = id(flow)
-        request_id = self._request_ids.get(flow_id, str(uuid4()))
-        start_time = self._request_times.get(flow_id, time.time())
-        latency_ms = (time.time() - start_time) * 1000
-
-        # Log summary for all responses
-        log_request_summary(
-            method,
-            url,
-            status_code,
-            latency_ms,
-            captured=should_capture,
-        )
+        # Reuse the request's decision when JSON payload recognition triggered capture.
+        should_capture = self._capture_decisions.get(flow_id, self.url_filter.should_capture(url))
 
         if not should_capture:
             # Cleanup and exit early if not capturing
             self._cleanup_flow(flow_id)
             return
+
+        request_id = self._request_ids.get(flow_id, str(uuid4()))
+        start_time = self._request_times.get(flow_id, time.time())
+        latency_ms = (time.time() - start_time) * 1000
+        log_request_summary(method, url, status_code, latency_ms, captured=True)
 
         # Use the session ID from the request start
         session_id = self._request_sessions.get(flow_id)
@@ -211,13 +218,40 @@ class WatchAddon:
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """Handle response headers (called before body is received)."""
-        url = flow.request.pretty_url
-        if not self.url_filter.should_capture(url):
+        flow_id = id(flow)
+        should_capture = self._capture_decisions.get(
+            flow_id, self.url_filter.should_capture(flow.request.pretty_url)
+        )
+        if not should_capture and self._should_stream_passthrough(flow):
+            flow.response.stream = True
             return
 
         content_type = flow.response.headers.get("content-type", "")
-        if "text/event-stream" in content_type:
-            self._logger.debug("Detected streaming response for %s", url)
+        if should_capture and "text/event-stream" in content_type:
+            self._logger.debug("Detected streaming response for %s", flow.request.pretty_url)
+
+    @staticmethod
+    def _should_parse_unmatched_request(flow: http.HTTPFlow) -> bool:
+        """Limit relay detection to reasonably sized JSON request bodies."""
+        content = flow.request.content
+        if not content or len(content) > MAX_UNMATCHED_REQUEST_BODY_BYTES:
+            return False
+        content_type = flow.request.headers.get("content-type", "").lower()
+        return "json" in content_type
+
+    @staticmethod
+    def _should_stream_passthrough(flow: http.HTTPFlow) -> bool:
+        """Stream non-model media and large downloads without buffering their bodies."""
+        headers = flow.response.headers
+        content_type = headers.get("content-type", "").lower()
+        if content_type.startswith(STREAM_PASSTHROUGH_CONTENT_TYPES):
+            return True
+        if "content-range" in headers:
+            return True
+        try:
+            return int(headers.get("content-length", "0")) >= STREAM_PASSTHROUGH_MIN_BYTES
+        except ValueError:
+            return False
 
     def tls_failed_server(self, data: TlsData) -> None:
         """Log TLS handshake failures with server context."""
@@ -355,19 +389,14 @@ class WatchAddon:
         self._request_times.pop(flow_id, None)
         self._request_ids.pop(flow_id, None)
         self._request_sessions.pop(flow_id, None)
+        self._capture_decisions.pop(flow_id, None)
 
 
-async def run_watch_proxy(
+def create_watch_proxy_master(
     config: LLIConfig,
     watch_manager: WatchManager,
-) -> None:
-    """
-    Start the mitmproxy server in watch mode.
-
-    Args:
-        config: LLI configuration
-        watch_manager: WatchManager instance for session management
-    """
+) -> DumpMaster:
+    """Create a configured dump master without starting its event loop."""
     logger = get_logger()
     logger.info("Starting watch proxy on %s:%d", config.proxy.host, config.proxy.port)
 
@@ -430,6 +459,27 @@ async def run_watch_proxy(
     except Exception:
         pass
 
+    return master
+
+
+async def run_watch_proxy(
+    config: LLIConfig,
+    watch_manager: WatchManager,
+    on_ready: Callable[[DumpMaster], None] | None = None,
+    on_running: Callable[[], None] | None = None,
+) -> None:
+    """Start the mitmproxy server in watch mode."""
+    logger = get_logger()
+    master = create_watch_proxy_master(config, watch_manager)
+    if on_ready:
+        on_ready(master)
+    if on_running:
+
+        class RuntimeSignalAddon:
+            def running(self) -> None:
+                on_running()
+
+        master.addons.add(RuntimeSignalAddon())
     logger.info("Watch proxy initialized, monitoring traffic...")
 
     try:

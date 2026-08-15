@@ -3,11 +3,16 @@ import { EmptyState } from './components/layout/EmptyState';
 import { ExchangeDetailsPane } from './components/layout/ExchangeDetailsPane';
 import { MemoizedRequestsPane } from './components/layout/RequestsPane';
 import { SessionsSidebar } from './components/layout/SessionsSidebar';
+import { RuntimeControlBar } from './components/layout/RuntimeControlBar';
+import { RuntimeObservabilityPanel } from './components/layout/RuntimeObservabilityPanel';
+import { SettingsPage } from './components/layout/SettingsPage';
 import { useAnnotations } from './hooks/useAnnotations';
 import { useResizablePanels } from './hooks/useResizablePanels';
 import { useSessionListPreferences } from './hooks/useSessionListPreferences';
 import { useSessions } from './hooks/useSessions';
 import { useTheme } from './hooks/useTheme';
+import { useRuntime } from './hooks/useRuntime';
+import { useRuntimeEvents } from './hooks/useRuntimeEvents';
 import { stringToColor } from './utils/ui';
 
 // API Base URL - empty for relative path (production), or localhost for dev
@@ -17,6 +22,7 @@ const App: React.FC = () => {
   const { isDarkMode, toggleTheme } = useTheme();
   const { isNewestFirst, toggleSortOrder } = useSessionListPreferences();
   const [systemPromptFilter, setSystemPromptFilter] = useState<string | null>(null);
+  const [view, setView] = useState<'home' | 'settings'>('home');
 
   const {
     sessionsWidth,
@@ -43,6 +49,8 @@ const App: React.FC = () => {
     deleteSession,
     selectedExchange: currentExchange,
   } = useSessions({ apiBase: API_BASE, pollMs: 2000, isNewestFirst });
+  const { runtime, isAvailable: isRuntimeAvailable, isBusy: isRuntimeBusy, error: runtimeError, runAction, setSiteProfiles, updateSettings } = useRuntime({ apiBase: API_BASE });
+  const observability = useRuntimeEvents({ apiBase: API_BASE, enabled: isRuntimeAvailable && !!runtime });
 
   const { annotations, setAnnotations, ensureLoaded, updateSessionNote, updateRequestNote } = useAnnotations({
     apiBase: API_BASE,
@@ -77,22 +85,31 @@ const App: React.FC = () => {
   };
 
   return (
-    <div
-      className={`${
-        isDarkMode ? 'dark' : ''
-      } h-screen w-full flex bg-gray-50 dark:bg-[#0f172a] text-slate-900 dark:text-slate-200 overflow-hidden font-sans selection:bg-blue-200 dark:selection:bg-blue-500/30 transition-colors duration-200`}
-    >
-      {sessionList.length === 0 ? (
-        <EmptyState
-          isDarkMode={isDarkMode}
-          isLoadingList={isLoadingList}
-          onToggleTheme={toggleTheme}
-          outputDir={watchStatus?.output_dir ?? null}
-          isRecording={watchStatus?.active ?? false}
-          recordingSessionId={watchStatus?.session_id ?? null}
+    <div className={`${isDarkMode ? 'dark' : ''} h-screen w-full flex flex-col bg-gray-50 dark:bg-[#0f172a] text-slate-900 dark:text-slate-200 overflow-hidden font-sans selection:bg-blue-200 dark:selection:bg-blue-500/30 transition-colors duration-200`}>
+      {isRuntimeAvailable && runtime && (
+        <RuntimeControlBar
+          runtime={runtime}
+          isBusy={isRuntimeBusy}
+          error={runtimeError}
+          onAction={runAction}
+          view={view}
+          onChangeView={setView}
         />
-      ) : (
-        <>
+      )}
+      <main className="flex min-h-0 flex-1">
+        {view === 'settings' && runtime ? (
+          <SettingsPage runtime={runtime} isBusy={isRuntimeBusy} onSetSiteProfiles={setSiteProfiles} onSaveSettings={updateSettings} />
+        ) : sessionList.length === 0 ? (
+          <EmptyState
+            isDarkMode={isDarkMode}
+            isLoadingList={isLoadingList}
+            onToggleTheme={toggleTheme}
+            outputDir={watchStatus?.output_dir ?? null}
+            isRecording={runtime?.recording ?? watchStatus?.active ?? false}
+            recordingSessionId={runtime?.session_id ?? watchStatus?.session_id ?? null}
+          />
+        ) : (
+          <>
           <SessionsSidebar
             width={sessionsWidth}
             isCollapsed={isSessionsCollapsed}
@@ -137,8 +154,10 @@ const App: React.FC = () => {
                 loadingExchangeSequenceId === currentExchange.sequenceId)
             }
           />
-        </>
-      )}
+          </>
+        )}
+      </main>
+      {isRuntimeAvailable && runtime && view === 'home' && <RuntimeObservabilityPanel observability={observability} />}
     </div>
   );
 };

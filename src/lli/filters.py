@@ -6,10 +6,15 @@ Provides pattern-based filtering to capture only relevant LLM API traffic.
 
 import fnmatch
 import re
+from collections.abc import Mapping
 from re import Pattern
 
 from lli.config import FilterConfig
 from lli.logger import get_logger
+from lli.sites import get_model_site_patterns
+
+VERSIONED_API_PATH_RE = re.compile(r"/(?:openai/)?v\d+(?:beta)?(?:/|$)", re.IGNORECASE)
+LLM_PAYLOAD_KEYS = frozenset({"messages", "input", "prompt", "tools", "max_tokens", "stream"})
 
 
 class URLFilter:
@@ -33,8 +38,12 @@ class URLFilter:
             config: FilterConfig with include and exclude patterns
         """
         # Regex patterns (default built-in patterns)
+        resolved_patterns = [
+            *config.include_patterns,
+            *get_model_site_patterns(config.site_profiles),
+        ]
         self.include_patterns: list[Pattern[str]] = [
-            re.compile(p, re.IGNORECASE) for p in config.include_patterns
+            re.compile(pattern, re.IGNORECASE) for pattern in resolved_patterns
         ]
         self.exclude_patterns: list[Pattern[str]] = [
             re.compile(p, re.IGNORECASE) for p in config.exclude_patterns
@@ -42,14 +51,16 @@ class URLFilter:
         # Glob patterns (user-provided via --include)
         self.include_globs: list[str] = list(config.include_globs)
         self.exclude_globs: list[str] = list(config.exclude_globs)
+        self.auto_detect_api_paths = config.auto_detect_api_paths
         self._logger = get_logger()
 
-    def should_capture(self, url: str) -> bool:
+    def should_capture(self, url: str, body: object | None = None) -> bool:
         """
         Determine if a URL should be captured.
 
         Args:
             url: The full URL to check
+            body: Parsed JSON request body when available. Used for relay detection.
 
         Returns:
             True if the URL should be captured, False otherwise
@@ -82,8 +93,30 @@ class URLFilter:
                 self._logger.debug("URL matched glob include pattern: %s", url)
                 return True
 
+        if self._looks_like_relay_api(url, body):
+            self._logger.debug("URL matched relay API recognition: %s", url)
+            return True
+
         # No match - don't capture
         return False
+
+    def _looks_like_relay_api(self, url: str, body: object | None) -> bool:
+        """Recognize OpenAI-compatible relays without depending on their hostname."""
+        if not self.auto_detect_api_paths:
+            return False
+
+        # Most OpenAI-compatible relays expose paths such as /v1/chat/completions.
+        if VERSIONED_API_PATH_RE.search(url):
+            return True
+
+        if not isinstance(body, Mapping):
+            return False
+
+        model = body.get("model")
+        if not isinstance(model, str) or not model.strip():
+            return False
+
+        return any(key in body for key in LLM_PAYLOAD_KEYS)
 
     def add_include_pattern(self, pattern: str) -> None:
         """Add an include regex pattern at runtime."""

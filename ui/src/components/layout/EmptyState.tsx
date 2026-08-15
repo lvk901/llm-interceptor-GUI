@@ -57,18 +57,6 @@ export const EmptyState: React.FC<{
             </p>
           ) : null}
 
-          <div className="text-left inline-block rounded-2xl bg-white/80 dark:bg-slate-800/30 border border-gray-200 dark:border-slate-700/50 px-5 py-4 shadow-sm backdrop-blur-sm">
-            <div className="font-semibold text-slate-800 dark:text-slate-200 mb-2">How to capture</div>
-            <ol className="list-decimal pl-5 space-y-1">
-              <li>
-                In the terminal running <code>lli watch</code>, press <code>Enter</code> to start capturing.
-              </li>
-              <li>Start your conversation in your tool/app (with proxy env vars configured).</li>
-              <li>
-                Press <code>Enter</code> again to stop and process the session.
-              </li>
-            </ol>
-          </div>
         </div>
       )}
     </div>

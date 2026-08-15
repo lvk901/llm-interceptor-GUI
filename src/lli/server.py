@@ -4,23 +4,27 @@ FastAPI server for the LLM Interceptor UI.
 Serves the React frontend and provides API endpoints for session data.
 """
 
+import asyncio
 import hashlib
 import json
 import logging
 import mimetypes
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from lli.runtime import ProxyRuntime, RuntimeObservabilitySnapshot, RuntimeSnapshot
 from lli.watch import WatchManager
 
 # Get logger
@@ -112,11 +116,60 @@ class WatchStatus(BaseModel):
     session_id: str | None = None
 
 
+class RuntimeStatus(BaseModel):
+    """Desktop runtime state for proxy, recording, certificate, and website controls."""
+
+    proxy_running: bool
+    proxy_host: str
+    proxy_port: int
+    recording: bool
+    session_id: str | None = None
+    system_proxy: dict[str, Any]
+    certificate: dict[str, Any]
+    enabled_site_profiles: list[str]
+    site_profiles: list[dict[str, str]]
+    output_dir: str
+    log_level: str
+    address_recognition: bool
+    error: str | None = None
+
+
+class SiteProfileSelection(BaseModel):
+    """Website profiles selected for the next proxy start."""
+
+    profile_ids: list[str]
+
+
+class RuntimeSettingsUpdate(BaseModel):
+    """Mutable desktop settings that apply immediately when safe."""
+
+    proxy_port: int = Field(ge=1, le=65535)
+    log_level: str = Field(pattern="^(DEBUG|INFO|WARNING|ERROR)$")
+    address_recognition: bool
+
+
+class RuntimeLogLine(BaseModel):
+    sequence: int
+    timestamp: str
+    level: str
+    source: str
+    message: str
+
+
+class RuntimeObservabilityStatus(BaseModel):
+    heartbeat_at: str
+    heartbeat_sequence: int
+    uptime_seconds: int
+    latest_log_sequence: int
+    logs: list[RuntimeLogLine]
+
+
 class ServerState:
     """Shared state for the API server."""
 
-    def __init__(self, watch_manager: WatchManager):
+    def __init__(self, watch_manager: WatchManager, runtime: ProxyRuntime | None = None):
         self.watch_manager = watch_manager
+        self.runtime = runtime
         self._session_cache: dict[str, SessionCacheEntry] = {}
 
 
@@ -691,10 +744,10 @@ def _validate_session_id(session_id: str) -> None:
         raise HTTPException(status_code=400, detail="Invalid session ID format")
 
 
-def create_app(watch_manager: WatchManager) -> FastAPI:
+def create_app(watch_manager: WatchManager, runtime: ProxyRuntime | None = None) -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(title="LLM Interceptor API")
-    state = ServerState(watch_manager)
+    state = ServerState(watch_manager, runtime)
 
     # Enable CORS for development
     app.add_middleware(
@@ -706,6 +759,110 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     )
 
     # API Endpoints
+
+    def get_runtime() -> ProxyRuntime:
+        if state.runtime is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Runtime controls are only available in the LLI desktop application",
+            )
+        return state.runtime
+
+    def runtime_response(snapshot: RuntimeSnapshot) -> RuntimeStatus:
+        return RuntimeStatus(**snapshot.__dict__)
+
+    def observability_response(
+        snapshot: RuntimeObservabilitySnapshot,
+    ) -> RuntimeObservabilityStatus:
+        return RuntimeObservabilityStatus(
+            heartbeat_at=snapshot.heartbeat_at,
+            heartbeat_sequence=snapshot.heartbeat_sequence,
+            uptime_seconds=snapshot.uptime_seconds,
+            latest_log_sequence=snapshot.latest_log_sequence,
+            logs=[RuntimeLogLine(**entry.__dict__) for entry in snapshot.logs],
+        )
+
+    @app.get("/api/runtime", response_model=RuntimeStatus)
+    def get_runtime_status():
+        return runtime_response(get_runtime().snapshot())
+
+    @app.get("/api/runtime/observability", response_model=RuntimeObservabilityStatus)
+    def get_runtime_observability(after: int = Query(default=0, ge=0)):
+        return observability_response(get_runtime().observability(after))
+
+    @app.get("/api/runtime/events")
+    async def stream_runtime_events(after: int = Query(default=0, ge=0)):
+        runtime = get_runtime()
+
+        async def event_stream():
+            sequence = after
+            while True:
+                payload = observability_response(runtime.observability(sequence))
+                sequence = payload.latest_log_sequence
+                data = payload.model_dump_json()
+                yield f"event: runtime\ndata: {data}\n\n"
+                await asyncio.sleep(1)
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/api/runtime/proxy/start", response_model=RuntimeStatus)
+    def start_runtime_proxy():
+        try:
+            return runtime_response(get_runtime().start_proxy())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/runtime/proxy/stop", response_model=RuntimeStatus)
+    def stop_runtime_proxy():
+        try:
+            return runtime_response(get_runtime().stop_proxy())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/runtime/recording/start", response_model=RuntimeStatus)
+    def start_runtime_recording():
+        try:
+            return runtime_response(get_runtime().start_recording())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/runtime/recording/stop", response_model=RuntimeStatus)
+    def stop_runtime_recording():
+        try:
+            return runtime_response(get_runtime().stop_recording())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.put("/api/runtime/site-profiles", response_model=RuntimeStatus)
+    def update_runtime_site_profiles(selection: SiteProfileSelection):
+        try:
+            return runtime_response(get_runtime().set_site_profiles(selection.profile_ids))
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.put("/api/runtime/settings", response_model=RuntimeStatus)
+    def update_runtime_settings(settings: RuntimeSettingsUpdate):
+        try:
+            return runtime_response(
+                get_runtime().update_settings(
+                    settings.proxy_port,
+                    settings.log_level,
+                    settings.address_recognition,
+                )
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/runtime/certificate/install", response_model=RuntimeStatus)
+    def install_runtime_certificate():
+        try:
+            return runtime_response(get_runtime().install_certificate())
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/status", response_model=WatchStatus)
     def get_status():
@@ -880,6 +1037,8 @@ def create_app(watch_manager: WatchManager) -> FastAPI:
     # Serve static files (React UI)
     # The static directory should be adjacent to this file in the package
     static_dir = Path(__file__).parent / "static"
+    if not static_dir.exists() and hasattr(sys, "_MEIPASS"):
+        static_dir = Path(sys._MEIPASS) / "lli" / "static"
 
     if static_dir.exists():
         # Mount assets specifically for explicit access (higher priority)

@@ -6,6 +6,7 @@ Aggregates streaming response chunks into complete request-response pairs.
 
 import json
 from collections import defaultdict
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -133,6 +134,10 @@ class StreamMerger:
                         response = self._rebuild_anthropic_response(
                             request_id, request_chunks, meta
                         )
+                    elif api_format == "openai_responses":
+                        response = self._rebuild_openai_responses_response(
+                            request_id, request_chunks, meta
+                        )
                     else:
                         response = self._rebuild_openai_response(request_id, request_chunks, meta)
 
@@ -175,8 +180,13 @@ class StreamMerger:
             if not isinstance(content, dict):
                 continue
 
-            # Anthropic format indicators
             content_type = content.get("type", "")
+
+            # OpenAI Responses API format indicators
+            if content_type.startswith("response."):
+                return "openai_responses"
+
+            # Anthropic format indicators
             if content_type in (
                 "message_start",
                 "content_block_start",
@@ -192,7 +202,7 @@ class StreamMerger:
             if "choices" in content:
                 return "openai"
 
-        # Default to anthropic
+        # Default to anthropic for backward compatibility with existing captures.
         return "anthropic"
 
     def _rebuild_anthropic_response(
@@ -505,6 +515,123 @@ class StreamMerger:
             response["headers"] = headers
 
         return response
+
+    def _rebuild_openai_responses_response(
+        self,
+        request_id: str,
+        chunks: list[dict[str, Any]],
+        meta: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Rebuild an OpenAI Responses API response from SSE events."""
+        response_snapshot: dict[str, Any] = {}
+        final_response: dict[str, Any] | None = None
+        output_items: dict[int, dict[str, Any]] = {}
+        content_parts: dict[tuple[int, int], dict[str, Any]] = {}
+        text_deltas: dict[tuple[int, int], list[str]] = defaultdict(list)
+        completed_text: dict[tuple[int, int], str] = {}
+
+        status_code = meta.get("status_code", 200)
+        timestamp = None
+        headers: dict[str, str] = {}
+
+        for chunk in chunks:
+            content = chunk.get("content", {})
+            if not isinstance(content, dict):
+                continue
+
+            if timestamp is None:
+                timestamp = chunk.get("timestamp")
+                status_code = chunk.get("status_code", status_code)
+                headers = chunk.get("headers", {})
+
+            event_type = content.get("type", "")
+            response = content.get("response")
+            if isinstance(response, dict):
+                response_snapshot = deepcopy(response)
+                if event_type == "response.completed":
+                    final_response = deepcopy(response)
+
+            output_index = content.get("output_index", 0)
+            content_index = content.get("content_index", 0)
+            if not isinstance(output_index, int) or not isinstance(content_index, int):
+                continue
+
+            key = (output_index, content_index)
+            if event_type in {"response.output_item.added", "response.output_item.done"}:
+                item = content.get("item")
+                if isinstance(item, dict):
+                    output_items[output_index] = deepcopy(item)
+            elif event_type in {"response.content_part.added", "response.content_part.done"}:
+                part = content.get("part")
+                if isinstance(part, dict):
+                    content_parts[key] = deepcopy(part)
+            elif event_type == "response.output_text.delta":
+                delta = content.get("delta")
+                if isinstance(delta, str):
+                    text_deltas[key].append(delta)
+            elif event_type == "response.output_text.done":
+                text = content.get("text")
+                if isinstance(text, str):
+                    completed_text[key] = text
+
+        body = final_response or response_snapshot or {"object": "response", "output": []}
+        output = body.get("output")
+        if not isinstance(output, list):
+            output = []
+            body["output"] = output
+
+        # A completed response normally contains the full output. Reconstruct it
+        # from deltas only when an upstream relay omits that final output object.
+        if not output and (output_items or content_parts or text_deltas or completed_text):
+            for output_index, item in sorted(output_items.items()):
+                while len(output) <= output_index:
+                    output.append({"type": "message", "role": "assistant", "content": []})
+                output[output_index] = item
+
+            for (output_index, content_index), part in sorted(content_parts.items()):
+                item = self._ensure_responses_output_item(output, output_index)
+                content = item.setdefault("content", [])
+                while len(content) <= content_index:
+                    content.append({"type": "output_text", "text": ""})
+                content[content_index] = part
+
+            for key in set(text_deltas) | set(completed_text):
+                output_index, content_index = key
+                item = self._ensure_responses_output_item(output, output_index)
+                content = item.setdefault("content", [])
+                while len(content) <= content_index:
+                    content.append({"type": "output_text", "text": ""})
+                part = content[content_index]
+                if not isinstance(part, dict):
+                    part = {"type": "output_text", "text": ""}
+                    content[content_index] = part
+                part["type"] = part.get("type", "output_text")
+                part["text"] = completed_text.get(key, "".join(text_deltas[key]))
+
+        response_record: dict[str, Any] = {
+            "type": "response",
+            "request_id": request_id,
+            "status_code": status_code,
+            "body": body,
+            "latency_ms": meta.get("total_latency_ms", 0),
+        }
+        if timestamp:
+            response_record["timestamp"] = timestamp
+        if headers:
+            response_record["headers"] = headers
+
+        return response_record
+
+    @staticmethod
+    def _ensure_responses_output_item(output: list[Any], output_index: int) -> dict[str, Any]:
+        """Return a mutable message item at an OpenAI Responses output index."""
+        while len(output) <= output_index:
+            output.append({"type": "message", "role": "assistant", "content": []})
+        item = output[output_index]
+        if not isinstance(item, dict):
+            item = {"type": "message", "role": "assistant", "content": []}
+            output[output_index] = item
+        return item
 
     def _extract_text_from_chunks(self, chunks: list[dict[str, Any]]) -> str:
         """Extract the complete response text from streaming chunks."""

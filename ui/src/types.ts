@@ -23,6 +23,48 @@ export interface WatchStatus {
   session_id: string | null;
 }
 
+export interface RuntimeStatus {
+  proxy_running: boolean;
+  proxy_host: string;
+  proxy_port: number;
+  recording: boolean;
+  session_id: string | null;
+  system_proxy: {
+    supported: boolean;
+    enabled: boolean;
+    managed_by_lli: boolean;
+    server: string | null;
+  };
+  certificate: {
+    supported: boolean;
+    exists: boolean;
+    installed: boolean;
+    path: string;
+  };
+  enabled_site_profiles: string[];
+  site_profiles: Array<{ id: string; name: string }>;
+  output_dir: string;
+  log_level: 'DEBUG' | 'INFO' | 'WARNING' | 'ERROR';
+  address_recognition: boolean;
+  error: string | null;
+}
+
+export interface RuntimeLogEntry {
+  sequence: number;
+  timestamp: string;
+  level: string;
+  source: string;
+  message: string;
+}
+
+export interface RuntimeObservability {
+  heartbeat_at: string;
+  heartbeat_sequence: number;
+  uptime_seconds: number;
+  latest_log_sequence: number;
+  logs: RuntimeLogEntry[];
+}
+
 export interface LogRecord {
   type: "request" | "response";
   request_id: string;

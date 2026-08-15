@@ -34,3 +34,17 @@ body {
   margin: 0;
   padding: 0;
 }
+
+.runtime-mark {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid #2563eb;
+}
+
+.runtime-mark span {
+  width: 7px;
+  height: 7px;
+  background: #f97316;
+}

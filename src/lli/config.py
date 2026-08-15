@@ -12,6 +12,8 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
+from lli.sites import DEFAULT_MODEL_SITE_IDS
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:
@@ -40,6 +42,10 @@ class FilterConfig(BaseModel):
     include_globs: list[str] = Field(default_factory=list)
     # Glob patterns to exclude (user-friendly, takes precedence)
     exclude_globs: list[str] = Field(default_factory=list)
+    # Built-in browser based AI model websites to capture in addition to API providers.
+    site_profiles: list[str] = Field(default_factory=lambda: list(DEFAULT_MODEL_SITE_IDS))
+    # Recognize versioned API paths and LLM-shaped JSON payloads on unknown relay domains.
+    auto_detect_api_paths: bool = True
 
 
 class MaskingConfig(BaseModel):

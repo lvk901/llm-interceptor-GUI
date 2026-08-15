@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Windows desktop application** - Added a portable native desktop shell with one-click proxy and recording controls, HTTPS certificate installation, settings, live backend logs, and heartbeat status.
+- **Model website profiles** - Added configurable capture profiles for ChatGPT, Claude, Gemini, DeepSeek, Kimi, Qwen, Doubao, and Zhipu web applications.
+- **Relay API recognition** - Added hostname-independent detection for versioned OpenAI-compatible endpoints and JSON request bodies containing model input.
+- **Codex Responses API stream support** - Added reconstruction of `response.*` SSE events, preserving completed response output and rebuilding `response.output_text.delta` text when an upstream relay omits the final object.
+
+### Changed
+
+- **Non-model traffic pass-through** - Large downloads, range responses, and media content that do not match a model request are streamed without buffering or recording; live proxy summaries now focus on captured model traffic.
+
+### Fixed
+
+- **Empty Codex response captures** - Responses API streams are no longer incorrectly handled as Anthropic streams, so Codex output is available in saved session response files.
+
 ## [2.9.5] - 2026-07-29
 
 ### Fixed

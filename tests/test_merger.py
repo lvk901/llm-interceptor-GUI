@@ -966,6 +966,95 @@ class TestRebuildOpenAIResponse:
         assert result["body"]["choices"][0]["message"]["content"] == "Hello!"
 
 
+class TestRebuildOpenAIResponsesResponse:
+    """Test rebuilding Responses API SSE events used by Codex."""
+
+    def test_detects_responses_api_events(self, tmp_path: Path) -> None:
+        merger = StreamMerger(tmp_path / "in.jsonl", tmp_path / "out.jsonl")
+
+        assert merger._detect_api_format(
+            [{"content": {"type": "response.output_text.delta", "delta": "Hello"}}]
+        ) == "openai_responses"
+
+    def test_uses_completed_response_output(self, tmp_path: Path) -> None:
+        merger = StreamMerger(tmp_path / "in.jsonl", tmp_path / "out.jsonl")
+        completed_response = {
+            "id": "resp_123",
+            "object": "response",
+            "model": "gpt-5.6-terra",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "123", "annotations": []}],
+                }
+            ],
+        }
+
+        result = merger._rebuild_openai_responses_response(
+            "req_123",
+            [
+                {
+                    "status_code": 200,
+                    "timestamp": "2025-01-01T12:00:00Z",
+                    "content": {"type": "response.output_text.delta", "delta": "123"},
+                },
+                {"content": {"type": "response.completed", "response": completed_response}},
+            ],
+            {"total_latency_ms": 42},
+        )
+
+        assert result["body"] == completed_response
+        assert result["body"]["output"][0]["content"][0]["text"] == "123"
+        assert result["latency_ms"] == 42
+
+    def test_rebuilds_text_from_deltas_without_completed_output(self, tmp_path: Path) -> None:
+        merger = StreamMerger(tmp_path / "in.jsonl", tmp_path / "out.jsonl")
+
+        result = merger._rebuild_openai_responses_response(
+            "req_123",
+            [
+                {
+                    "status_code": 200,
+                    "content": {
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": {"type": "message", "role": "assistant", "content": []},
+                    },
+                },
+                {
+                    "content": {
+                        "type": "response.content_part.added",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "part": {"type": "output_text", "text": "", "annotations": []},
+                    },
+                },
+                {
+                    "content": {
+                        "type": "response.output_text.delta",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": "Hello ",
+                    },
+                },
+                {
+                    "content": {
+                        "type": "response.output_text.delta",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": "world!",
+                    },
+                },
+            ],
+            {},
+        )
+
+        assert result["body"]["object"] == "response"
+        assert result["body"]["output"][0]["content"][0]["text"] == "Hello world!"
+
+
 class TestStreamMergerIntegration:
     """Integration tests for the full merge workflow with new output format."""
 
