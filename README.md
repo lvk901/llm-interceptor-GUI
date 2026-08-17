@@ -1,95 +1,45 @@
-# LLM Interceptor (LLI)
+# LLM Interceptor（LLI）
 
-<p align="center">
-  <strong>🔍 Proxy-layer microscope for LLM traffic analysis</strong>
-</p>
+LLM Interceptor 是一个本地代理抓包与分析工具，用于查看 AI 编程工具、模型网站和 OpenAI 兼容中转站发出的 LLM API 请求与响应。它可以把流式响应还原为可阅读的对话，并按会话保存，方便排查提示词、工具调用、模型输出、耗时和 token 用量。
 
-<p align="center">
-  A cross-platform command-line tool that intercepts, analyzes, and logs communications between AI coding tools/agents (Claude Code, Cursor, Codex, OpenCode, etc.) and their backend LLM APIs.
-</p>
+> 仅应抓取你拥有权限查看的流量。日志可能包含提示词、响应内容和其他敏感数据，请妥善保管输出目录。
 
----
+## 功能概览
 
-![LLI Web UI](lli-ui-screenshot.png)
+- 代理层捕获 Anthropic、OpenAI、Google、DeepSeek、Groq、Mistral、Together 等常见模型 API。
+- 支持 OpenAI Chat Completions 和 Responses API 的流式 SSE；可还原 Codex 使用的 `response.output_text.delta` 等事件。
+- 支持 OpenAI 兼容中转站：根据 `/v1/*` 地址、请求体中的 `model` 与 `messages`、`input`、`prompt` 等特征识别，不依赖 OpenAI 官方域名。
+- 支持 ChatGPT、Claude、Gemini、DeepSeek、Kimi、通义千问、豆包、智谱清言等网页模型的 API 路径配置。
+- Windows 桌面版提供代理开关、录制开关、HTTPS 证书安装、设置页、实时日志和后端心跳。
+- 会话数据自动整理为请求/响应对，Web UI 可查看对话、系统提示词、工具调用、统计信息和原始 JSON。
+- 自动脱敏常见密钥字段；非模型流量和大媒体下载会直接透传，不写入模型会话。
 
-## ✨ Features
+## Windows 桌面版
 
-- **Watch Mode** - Interactive continuous capture with session management
-- **Transparent Inspection** - See exactly what prompts are sent and what responses are received
-- **Streaming Support** - Captures both streaming (SSE) and non-streaming API responses
-- **Responses API Support** - Rebuilds OpenAI Responses API streams used by Codex, including `response.output_text.delta` events
-- **Multi-Provider** - Works with Anthropic, OpenAI, Google, Groq, Together, Mistral, and more
-- **Model Website Profiles** - Capture the API traffic behind ChatGPT, Claude, Gemini, DeepSeek, Kimi, Qwen, Doubao, and Zhipu web apps
-- **Relay Recognition** - Detect OpenAI-compatible relay APIs from versioned paths and JSON request shapes, even when the hostname is custom
-- **Automatic Masking** - Protects API keys and sensitive data in logs
-- **Auto Processing** - Automatically merges and splits session data
-- **Cross-Platform** - Works on Windows, macOS, and Linux
-- **Windows Desktop App** - One-click proxy and recording controls, runtime settings, live logs, and backend heartbeat
-- **Efficient Pass-through** - Streams unmatched media and large downloads without buffering them for inspection
+桌面版适合希望图形化操作的 Windows 用户。可执行文件路径为：
 
-
-
-## 📦 Installation
-
-### Using uv (recommended)
-
-```bash
-uv tool install llm-interceptor
+```text
+dist/LLM Interceptor.exe
 ```
 
-### Using pip
+首次启动的建议操作顺序：
 
-```bash
-pip install llm-interceptor
-```
+1. 点击顶部的“安装证书”，允许为当前 Windows 用户安装 mitmproxy HTTPS 根证书。
+2. 点击“启动代理”。LLI 会监听 `127.0.0.1:9090`，并临时将当前用户的 Windows 系统代理指向该地址。
+3. 点击“开始录制”，然后再进行模型对话或调用。
+4. 完成后点击“停止录制”。此时会话会自动处理并显示在左侧列表中。
+5. 最后点击“停止代理”。LLI 会恢复启动前保存的 Windows 系统代理设置。
 
-### From source
+### 代理与录制是两个独立操作
 
-```bash
-git clone https://github.com/chouzz/llm-interceptor.git
-cd llm-interceptor
-uv sync --dev
-uv run lli-dev-setup
-```
+- 可以只启动代理而不录制，此时流量会透传，但不会生成会话。
+- 必须先启动代理才能开始录制。
+- 录制中不能停止代理。请先停止录制，再停止代理，避免会话不完整和网络设置未恢复。
+- 退出桌面程序时，程序会尝试结束正在录制的会话并恢复 LLI 管理的系统代理。
 
-### Development setup
+### 已有系统代理时的建议
 
-Git does not copy hooks from `.git/hooks` when you clone a repository, so each
-new clone must install the project's `pre-commit` hook once:
-
-```bash
-uv sync --dev
-uv run lli-dev-setup
-```
-
-If you prefer `pip`:
-
-```bash
-pip install -e .[dev]
-lli-dev-setup
-```
-
-### Windows desktop app
-
-The portable desktop build embeds the web UI and the local proxy controller in one executable.
-
-```bash
-uv sync --extra desktop --dev
-python build_ui.py
-python build_desktop.py
-```
-
-The output is `dist/LLM Interceptor.exe`. The first certificate installation asks for Windows
-permission to trust the mitmproxy root certificate for the current user.
-
-When the desktop app is running:
-
-1. Install the HTTPS certificate once from the app when prompted.
-2. Start the proxy. It configures the current user's Windows system proxy to `127.0.0.1:9090`.
-3. Start recording before beginning a model conversation, then stop recording to save and process the session.
-4. Use **Settings** to choose model website profiles and configure relay recognition. Stop the proxy before changing website profiles or the proxy port.
-
-The proxy forwards ordinary traffic as well. Unmatched media responses and large downloads are streamed through without being buffered or written to model traces. For the least impact on unrelated applications, direct only the application under test to LLI instead of enabling the Windows system proxy:
+如果电脑同时运行 Steamcommunity 302、VPN、加速器或其他系统代理工具，不建议让多个程序同时接管 Windows 系统代理。优先使用“只给目标程序设置代理”的方式，例如只让 Codex 经过 LLI：
 
 ```powershell
 $env:HTTP_PROXY = 'http://127.0.0.1:9090'
@@ -97,289 +47,220 @@ $env:HTTPS_PROXY = 'http://127.0.0.1:9090'
 codex
 ```
 
-This is useful for Codex and other CLI tools when you want to capture only their traffic while browsers and other local software keep their existing network route.
+这样浏览器、视频、游戏平台和现有系统代理保持原有网络路径，只有当前 PowerShell 启动的 Codex 会通过 LLI。
 
-The desktop live panel shows backend heartbeat and proxy uptime separately. It keeps its collapsed or expanded state between launches. Non-model pass-through activity is shown at a bounded per-host rate and omits URL paths and query parameters, so media segment traffic does not overwhelm the log view or expose request parameters.
+### 设置页
 
-## 🚀 Quick Start
+顶部右侧齿轮进入设置页，可配置：
 
-### 1. Install Certificate (For HTTPS Capture Only)
+- 代理监听端口。代理运行时不能修改端口。
+- 日志级别。
+- 模型网站捕获配置。代理运行时不能修改网站配置。
+- 地址识别：启用后会识别 `/v1/*` 和符合 OpenAI 兼容特征的请求，适合自定义域名或 API 中转站。
 
-If you're only capturing HTTP traffic, you can skip this step. Only install the certificate if you need to capture HTTPS requests.
+首页底部的 **LIVE RUNTIME** 显示后端心跳、代理运行时长和实时日志。该面板默认折叠，展开状态会在下次启动时保留。
+
+## 快速开始：命令行
+
+### 安装
+
+推荐使用 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
-# Generate certificate
-lli watch &
-sleep 2
-kill %1
+uv tool install llm-interceptor
 ```
 
-Then install the certificate:
+或使用 pip：
 
-**macOS:**
 ```bash
-open ~/.mitmproxy/mitmproxy-ca-cert.pem
-# Double-click to add to Keychain
-# In Keychain Access, find "mitmproxy" → Double-click → Trust → "Always Trust"
+pip install llm-interceptor
 ```
 
-**Linux (Ubuntu/Debian):**
+从源码安装：
+
 ```bash
-sudo cp ~/.mitmproxy/mitmproxy-ca-cert.pem /usr/local/share/ca-certificates/mitmproxy.crt
-sudo update-ca-certificates
+git clone https://github.com/lvk901/llm-interceptor.git
+cd llm-interceptor
+uv sync --dev
+uv run lli-dev-setup
 ```
 
-**Windows:**
-Navigate to `%USERPROFILE%\.mitmproxy\`. Double-click `mitmproxy-ca-cert.p12` (or `mitmproxy-ca-cert.cer`) to open the certificate import wizard → Install Certificate → Local Machine → place in **Trusted Root Certification Authorities** → Finish.
-
-### 2. Start Watch Mode and Record Sessions
+### 启动监听
 
 ```bash
 lli watch
 ```
 
-If you need to capture traffic to a **custom or self-hosted API** , use `--include` with a glob pattern, for example:
+默认代理端口是 `9090`，Web UI 默认打开在 `http://127.0.0.1:8000`。在 watch 模式下：
 
-```bash
-lli watch --include "*api.example.com*"
+- `Enter`：开始录制；再次按下则停止录制并处理会话。
+- `Esc`：取消当前录制，不保留该会话。
+- `Ctrl+C`：退出监听。
+
+### 只让某个命令行工具经过代理
+
+PowerShell：
+
+```powershell
+$env:HTTP_PROXY = 'http://127.0.0.1:9090'
+$env:HTTPS_PROXY = 'http://127.0.0.1:9090'
+codex
 ```
 
-LLI also recognizes common OpenAI-compatible relay paths such as `/v1/chat/completions` and `/v1/responses`. For non-standard paths, relay recognition captures JSON requests that include a `model` field together with LLM input fields such as `messages`, `input`, or `prompt`.
-
-In watch mode:
-- **Press Enter** to start recording a session
-- **Press Enter** again to stop recording and automatically process the session
-- **Press Esc** while recording to cancel the current session (no output generated)
-- **Ctrl+C** to exit watch mode
-
-### 3. Configure Your Application and Start Dialogue (New Terminal)
+macOS / Linux：
 
 ```bash
 export HTTP_PROXY=http://127.0.0.1:9090
 export HTTPS_PROXY=http://127.0.0.1:9090
-export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem
-# Optional: bypass proxy for some hosts (e.g. localhost). Configure in lli.toml as no_proxy or run: lli config --proxy-help
-
-# Run Claude and start your conversation
-claude
-# Now start your dialogue - all prompts and responses will be captured
+codex
 ```
 
-### 4. (Optional) Corporate network: upstream CA certificate
-
-If you capture traffic **behind a corporate proxy** or on a network where upstream servers use a **company-signed certificate**, you may see TLS errors because the proxy only trusts the system CAs, not your company’s CA. Configure the **upstream** trust CA so LLI (mitmproxy) can verify connections to the corporate proxy or target hosts:
-
-- **Client → LLI:** Your app must trust the **mitmproxy CA** (install `~/.mitmproxy/mitmproxy-ca-cert.pem` as in step 1).
-- **LLI → upstream (corporate proxy / target):** LLI must trust the **company CA**. Set the path to your company’s root or intermediate CA (PEM file):
+Node.js 客户端若不信任本地证书，可额外设置：
 
 ```bash
-# Option A: CLI
-lli watch --upstream-ca-cert /path/to/corporate-ca.pem
-
+export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem
 ```
 
-Use `lli config --show` to confirm the upstream CA path. If the file does not exist at startup, LLI will exit with an error.
+## HTTPS 证书
 
-### 5. Visualize with Web UI
+LLI 需要 mitmproxy 根证书才能解密 HTTPS 流量。首次运行代理会生成证书，查看本机安装说明：
 
-The web interface should be launched in http://127.0.0.1:8000 to analyze captured conversations:
-
-In the UI, you can:
-- Browse captured sessions in the sidebar
-- View conversation flow between requests and responses
-- Inspect detailed API payloads and metadata
-- Search and filter through captured data
-- Copy formatted content for further analysis
-
-
-
-## 🎬 How Watch Mode Works
-
-Watch mode uses a state machine with three states:
-
-| State | Description |
-|-------|-------------|
-| **IDLE** | Monitoring traffic, waiting for you to start a session |
-| **RECORDING** | Capturing traffic with session ID injection |
-| **PROCESSING** | Auto-extracting, merging, and splitting session data |
-
-### Example Session
-
-```
-$ lli watch
-
-╭─────────────────────────╮
-│   LLI Watch Mode        │
-│ Continuous Capture      │
-╰─────────────────────────╯
-
-  Proxy Port:    9090
-  Output Dir:    ./traces (or OS-specific logs directory)
-  Global Log:    traces/all_captured_20251203_220000.jsonl
-
-Configure your application:
-  export HTTP_PROXY=http://127.0.0.1:9090
-  export HTTPS_PROXY=http://127.0.0.1:9090
-  export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem
-
-● [IDLE] Monitoring on :9090... Logging to all_captured_20251203_220000.jsonl
-  Press [Enter] to START Session 1
-<Enter>
-
-◉ [REC] Session 01_session_20251203_223010 is recording...
-  Press [Enter] to STOP & PROCESS, [Esc] to CANCEL
-<Enter>
-
-⏳ [BUSY] Processing Session 01_session_20251203_223010...
-  ✔ Saved to traces/01_session_20251203_223010/
-
-● [IDLE] Monitoring on :9090... Logging to all_captured_20251203_220000.jsonl
-  Press [Enter] to START Session 2
+```bash
+lli config --cert-help
 ```
 
-### Output Structure
+Windows 用户也可在桌面版点击“安装证书”。只安装当前用户需要的证书；如果公司设备受策略管理，请先遵循公司的安全要求。
+
+公司网络使用自签名或企业根证书时，可以为 LLI 配置上游 CA：
+
+```bash
+lli watch --upstream-ca-cert /path/to/company-ca.pem
+```
+
+这里的上游 CA 用于 LLI 验证公司代理或目标站点；客户端仍需要信任 mitmproxy 证书。
+
+## 自定义 API 与中转站
+
+地址识别默认会处理常见 OpenAI 兼容路径，例如：
 
 ```text
-./traces/                                    # Root output directory
-├── all_captured_20251203_220000.jsonl       # Global log (all traffic)
-│
-├── 01_session_20251203_223010/              # Session 01 folder
-│   ├── raw.jsonl                            # Clean session data
-│   ├── merged.jsonl                         # Merged conversations
-│   └── split_output/                        # Individual files
-│       ├── 001_request_2025-12-03_22-30-10.json
-│       └── 001_response_2025-12-03_22-30-10.json
-│
-├── 02_session_20251203_224500/              # Session 02 folder
-└── ...
+/v1/chat/completions
+/v1/responses
 ```
 
-## 📋 CLI Reference
-
-### `lli watch`
-
-Start watch mode for continuous session capture (recommended).
+对于非标准路径，LLI 还会检查 JSON 请求是否同时具有 `model` 与 `messages`、`input` 或 `prompt` 等模型调用特征。若中转站的路径和请求格式都非常规，可手动追加匹配规则：
 
 ```bash
-lli watch [OPTIONS]
-
-Options:
-  -p, --port INTEGER           Proxy server port (default: 9090)
-  -o, --output-dir, --log-dir PATH  Root output directory (default: ./traces or OS log dir)
-  -i, --include TEXT           Additional URL patterns to include (glob pattern)
-  --upstream-ca-cert PATH      Path to PEM or CA bundle for trusting upstream (e.g. corporate proxy) certificates
-  --debug                  Enable debug mode with verbose logging
-```
-
-**Examples:**
-
-```bash
-# Basic watch mode
-lli watch
-
-# Custom port and output directory
-lli watch --port 8888 --output-dir ./my_traces
-
-# Include custom API endpoint (glob pattern)
-lli watch --include "*my-custom-api.com*"
-
-# Corporate network: trust company CA so upstream TLS (proxy/target) is verified
-lli watch --upstream-ca-cert /path/to/corporate-ca.pem
-
-# Match all subdomains of a domain
 lli watch --include "*api.example.com*"
 ```
 
-**Glob Pattern Syntax:**
-
-| Pattern | Description |
-|---------|-------------|
-| `*` | Matches any characters |
-| `?` | Matches a single character |
-| `[seq]` | Matches any character in seq |
-| `[!seq]` | Matches any character not in seq |
-
-### `lli config`
-
-Display configuration and setup help.
+多个规则可重复传入；无须捕获的 URL 可以排除：
 
 ```bash
-lli config --cert-help    # Certificate installation instructions
-lli config --proxy-help   # Proxy configuration instructions
-lli config --show         # Show current configuration
+lli watch --include "*relay.example.com*" --exclude "*relay.example.com/health*"
 ```
 
-### `lli stats`
+## Web UI
 
-Display statistics for a captured trace file.
+Web UI 会显示已保存的会话：
+
+- 左侧会话列表按时间和目录名自然排序，例如 `_2` 会排在 `_10` 前。
+- 中间列表展示每个请求的接口、模型、状态、耗时、token 和系统提示词分组。
+- 右侧详情可查看对话、系统提示词、工具调用、统计图表和原始 JSON。
+- 左侧和中间面板可拖动调整宽度；拖动时不会播放滞后动画，并会保留详情区域的最小可用宽度。
+- 切换会话会清除上一个会话遗留的系统提示词筛选条件。
+
+内置的网站捕获配置包括：ChatGPT、Claude、Gemini、DeepSeek、Kimi、通义千问、豆包和智谱清言。可在桌面版设置页按需启用。
+
+## 输出数据
+
+`lli watch` 会在输出目录创建会话文件夹。默认目录由系统决定，也可以用 `--output-dir` 指定：
 
 ```bash
-lli stats traces/01_session_xxx/raw.jsonl
+lli watch --output-dir ./traces
 ```
 
-## 🔧 Supported LLM Providers
+典型结构如下：
 
-LLI is pre-configured to capture traffic from:
+```text
+traces/
+├── all_captured_20260817_120000.jsonl
+└── session_20260817_120500/
+    ├── raw.jsonl
+    ├── merged.jsonl
+    └── split_output/
+        ├── 001_request_2026-08-17_12-05-00.json
+        └── 001_response_2026-08-17_12-05-02.json
+```
 
-| Provider | API Domain |
-|----------|------------|
-| Anthropic | `api.anthropic.com` |
-| OpenAI | `api.openai.com` |
-| Google | `generativelanguage.googleapis.com` |
-| Together | `api.together.xyz` |
-| Groq | `api.groq.com` |
-| Mistral | `api.mistral.ai` |
-| Cohere | `api.cohere.ai` |
-| DeepSeek | `api.deepseek.com` |
+常用离线处理命令：
 
-Add custom providers with `--include` (using glob patterns):
 ```bash
-lli watch --include "*my-custom-api.com*"
+lli merge --input raw_trace.jsonl --output merged.jsonl
+lli split --input merged.jsonl --output ./split_output
+lli stats traces/session_xxx/raw.jsonl
 ```
 
-## 🐛 Troubleshooting
+## CLI 参考
 
-### SSL Certificate Error
+| 命令 | 用途 |
+| --- | --- |
+| `lli watch` | 启动代理、录制会话并默认启动 Web UI。 |
+| `lli watch --port 8888` | 使用指定代理端口。 |
+| `lli watch --lan` | 监听局域网地址；仅在确认网络环境安全时使用。 |
+| `lli watch --include "*host*"` | 增加需要捕获的 URL glob。 |
+| `lli watch --exclude "*path*"` | 排除 URL，并尽量让其跳过 MITM。 |
+| `lli config --show` | 查看当前配置。 |
+| `lli config --cert-help` | 查看证书安装说明。 |
+| `lli config --proxy-help` | 查看客户端代理配置说明。 |
+| `lli merge` / `lli split` / `lli stats` | 离线合并、拆分和统计抓包文件。 |
 
-**Problem:** `SSL: CERTIFICATE_VERIFY_FAILED`
+使用 `lli --help` 或 `lli watch --help` 查看完整参数。
 
-**Solution:** Install the mitmproxy CA certificate. Run `lli config --cert-help` for instructions.
+## 常见问题
 
-### Node.js Apps Not Working
+### 启动后没有捕获到流量
 
-**Problem:** Requests hang or timeout when using Claude Code, Cursor, etc.
+1. 确认目标程序实际使用了 `127.0.0.1:9090`，并在开始对话前已经启动录制。
+2. 对于 Codex、中转站或自定义域名，启用地址识别；仍未识别时使用 `--include` 添加域名或路径。
+3. HTTPS 请求需要客户端信任 mitmproxy 根证书。
+4. 桌面版请查看底部 LIVE RUNTIME 的日志和心跳，确认代理处于运行状态。
 
-**Solution:** Set the `NODE_EXTRA_CA_CERTS` environment variable:
+### 开启系统代理后其他软件变慢或无法联网
+
+系统代理会让 Windows 应用都经过 LLI。停止录制后先停止代理，LLI 会恢复启动前的系统代理。若系统还运行其他代理工具，改用“只让目标命令行程序设置 `HTTP_PROXY` / `HTTPS_PROXY`”的方式，避免多个程序互相覆盖设置。
+
+### 停止代理按钮不可用
+
+这是录制保护机制。请先点击“停止录制”，等待会话处理完成，再停止代理。
+
+### 响应显示为解析失败
+
+LLI 会保留原始响应，同时尝试识别常见流式和非流式协议。中转站若返回非 JSON、加密数据或自定义事件格式，原始 JSON 视图仍可用于定位响应实际内容；可附上脱敏后的请求/响应样本提交 issue。
+
+## 开发与构建
+
+安装开发依赖并执行测试：
+
 ```bash
-export NODE_EXTRA_CA_CERTS=~/.mitmproxy/mitmproxy-ca-cert.pem
+uv sync --extra desktop --dev
+uv run pytest tests -q
+uv run ruff check src tests
 ```
 
-### TLS / handshake errors behind corporate proxy
+构建桌面程序：
 
-**Problem:** Upstream TLS handshake failures when capturing company URLs (e.g. traffic goes through a corporate proxy that uses a company CA).
+```bash
+python build_ui.py
+python build_desktop.py
+```
 
-**Solution:** Configure the upstream trust CA so LLI can verify the corporate proxy or target server certificate. Use `--upstream-ca-cert`, or set `proxy.upstream_ca_cert` in `lli.toml`, or `LLI_UPSTREAM_CA_CERT`. See the "Corporate network: upstream CA certificate" section above.
+产物位于 `dist/LLM Interceptor.exe`。开发界面单独构建时，也可以在 `ui` 目录运行：
 
-### No Traffic Captured
+```bash
+npm run build
+```
 
-**Problem:** Watch mode is running but no requests are logged
+## 许可证
 
-**Solution:**
-1. Verify proxy environment variables are set correctly
-2. Make sure the URL matches the default patterns (or add `--include`)
-3. Check `lli config --show` to see current filter patterns
-
-## 📜 License
-
-MIT License
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-Before committing from a fresh clone, run `lli-dev-setup` once to install the
-repository's `pre-commit` hook locally.
-
-## 📞 Support
-
-- GitHub Issues: [Report a bug](https://github.com/chouzz/llm-interceptor/issues)
-- Documentation: [Read the docs](https://github.com/chouzz/llm-interceptor#readme)
+[MIT License](LICENSE)
