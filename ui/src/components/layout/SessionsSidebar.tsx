@@ -16,13 +16,15 @@ import {
 } from 'lucide-react';
 import type { AnnotationData, SessionSummary } from '../../types';
 import { formatDuration, formatTimestamp } from '../../utils';
+import { orderSessionSummaries } from '../../utils/sessionOrder';
 import { Tooltip } from '../common/Tooltip';
 
 export const SessionsSidebar: React.FC<{
   width: number;
   isCollapsed: boolean;
-  setIsCollapsed: (v: boolean) => void;
-  onStartResize: (e: React.MouseEvent) => void;
+  isResizing: boolean;
+  setIsCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
+  onStartResize: (e: React.PointerEvent<HTMLDivElement>) => void;
 
   sessionList: SessionSummary[];
   selectedSessionId: string | null;
@@ -39,6 +41,7 @@ export const SessionsSidebar: React.FC<{
 }> = ({
   width,
   isCollapsed,
+  isResizing,
   setIsCollapsed,
   onStartResize,
   sessionList,
@@ -54,14 +57,12 @@ export const SessionsSidebar: React.FC<{
 }) => {
   const [editingSessionNote, setEditingSessionNote] = useState<string | null>(null);
 
-  // Memoize callback functions
   const handleToggleCollapse = useCallback(() => {
-    setIsCollapsed(!isCollapsed);
-  }, [isCollapsed, setIsCollapsed]);
+    setIsCollapsed((collapsed) => !collapsed);
+  }, [setIsCollapsed]);
 
-  // Memoize rendered sessions
   const renderedSessions = useMemo(() => {
-    const orderedSessions = isNewestFirst ? [...sessionList].reverse() : sessionList;
+    const orderedSessions = orderSessionSummaries(sessionList, isNewestFirst);
 
     return orderedSessions.map((session) => {
       const sessionNote = annotations[session.id]?.session_note || '';
@@ -102,7 +103,9 @@ export const SessionsSidebar: React.FC<{
   return (
     <div
       style={{ width: isCollapsed ? '48px' : width }}
-      className="flex-shrink-0 border-r border-gray-200 dark:border-slate-800 bg-white dark:bg-[#0b1120] flex flex-col relative transition-all duration-300 ease-in-out"
+      className={`flex-shrink-0 border-r border-gray-200 dark:border-slate-800 bg-white dark:bg-[#0b1120] flex flex-col relative ${
+        isResizing ? 'transition-none select-none' : 'transition-[width] duration-200 ease-out'
+      }`}
     >
       {/* Sessions Header */}
       <div
@@ -159,8 +162,10 @@ export const SessionsSidebar: React.FC<{
       {/* Resizer Handle */}
       {!isCollapsed && (
         <div
-          className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/50 transition-colors z-10 flex items-center justify-center group"
-          onMouseDown={onStartResize}
+          className={`absolute top-0 -right-1 w-2 h-full cursor-col-resize touch-none z-10 flex items-center justify-center group ${
+            isResizing ? 'bg-blue-500/50' : 'hover:bg-blue-500/50 transition-colors'
+          }`}
+          onPointerDown={onStartResize}
         >
           <div className="w-[1px] h-full bg-gray-200 dark:bg-slate-800 group-hover:bg-blue-500"></div>
         </div>

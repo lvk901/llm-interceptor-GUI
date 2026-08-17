@@ -234,23 +234,28 @@ class ProxyRuntime:
 
     def stop_proxy(self) -> RuntimeSnapshot:
         if self.watch_manager.state == WatchState.RECORDING:
-            self.stop_recording()
+            raise RuntimeError("Stop recording before stopping the proxy")
 
         with self._lock:
             master = self._master
             thread = self._thread
-        if master is not None:
-            master.shutdown()
-        if thread is not None and thread.is_alive():
-            thread.join(timeout=8)
-        with self._lock:
-            self._master = None
-            self._thread = None
-            self._proxy_started_at = None
-        self.system_proxy.deactivate()
-        if self._initialized:
-            self.watch_manager.shutdown()
-            self._initialized = False
+
+        try:
+            if master is not None:
+                master.shutdown()
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=8)
+        finally:
+            with self._lock:
+                self._master = None
+                self._thread = None
+                self._proxy_started_at = None
+            try:
+                self.system_proxy.deactivate()
+            finally:
+                if self._initialized:
+                    self.watch_manager.shutdown()
+                    self._initialized = False
         self._logger.info("Desktop proxy stopped")
         return self.snapshot()
 
@@ -305,7 +310,14 @@ class ProxyRuntime:
 
     def shutdown(self) -> None:
         try:
+            if self.watch_manager.state == WatchState.RECORDING:
+                try:
+                    self.stop_recording()
+                except Exception:
+                    self._logger.exception("Failed to finalize recording during shutdown")
             self.stop_proxy()
         finally:
-            self.system_proxy.recover_stale_proxy()
-            self._logger.removeHandler(self._log_handler)
+            try:
+                self.system_proxy.recover_stale_proxy()
+            finally:
+                self._logger.removeHandler(self._log_handler)

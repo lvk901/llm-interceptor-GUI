@@ -122,6 +122,29 @@ def test_api_sessions_keep_stable_timestamp_for_suffixed_session_ids(
         watch_manager.shutdown()
 
 
+def test_api_sessions_naturally_orders_collision_suffixes(tmp_path: Path) -> None:
+    watch_manager = WatchManager(output_dir=tmp_path)
+    watch_manager.initialize()
+    try:
+        for suffix in ("", "_2", "_10"):
+            session_dir = tmp_path / f"session_20260101_120000{suffix}"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "annotations.json").write_text(
+                json.dumps({"session_note": "", "requests": {}}),
+                encoding="utf-8",
+            )
+
+        payload = TestClient(create_app(watch_manager)).get("/api/sessions").json()
+
+        assert [session["id"] for session in payload] == [
+            "session_20260101_120000",
+            "session_20260101_120000_2",
+            "session_20260101_120000_10",
+        ]
+    finally:
+        watch_manager.shutdown()
+
+
 def test_api_sessions_keep_stable_timestamp_when_directory_is_renamed(
     tmp_path: Path,
 ) -> None:

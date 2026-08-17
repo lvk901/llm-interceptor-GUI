@@ -42,7 +42,12 @@ export const RuntimeControlBar: React.FC<{
 
         <div className="flex items-center gap-1 border-l border-slate-200 pl-3 dark:border-slate-700">
           {runtime.proxy_running ? (
-            <ActionButton label="Stop proxy" active disabled={isBusy} onClick={() => onAction('proxy/stop')}>
+            <ActionButton
+              label={runtime.recording ? 'Stop recording before stopping the proxy' : 'Stop proxy'}
+              active
+              disabled={isBusy || runtime.recording}
+              onClick={() => onAction('proxy/stop')}
+            >
               <Power size={14} />
               <span>Stop proxy</span>
             </ActionButton>

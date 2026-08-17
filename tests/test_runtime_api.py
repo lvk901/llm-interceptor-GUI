@@ -63,8 +63,9 @@ class FakeRuntime:
         return self.snapshot()
 
     def stop_proxy(self) -> RuntimeSnapshot:
+        if self.recording:
+            raise RuntimeError("Stop recording before stopping the proxy")
         self.proxy_running = False
-        self.recording = False
         return self.snapshot()
 
     def start_recording(self) -> RuntimeSnapshot:
@@ -109,7 +110,11 @@ def test_runtime_api_controls_proxy_and_recording(tmp_path: Path) -> None:
     recording = client.post("/api/runtime/recording/start")
     assert recording.status_code == 200
     assert recording.json()["recording"] is True
-    assert client.post("/api/runtime/proxy/stop").json()["recording"] is False
+    proxy_stop = client.post("/api/runtime/proxy/stop")
+    assert proxy_stop.status_code == 409
+    assert proxy_stop.json()["detail"] == "Stop recording before stopping the proxy"
+    assert client.post("/api/runtime/recording/stop").json()["recording"] is False
+    assert client.post("/api/runtime/proxy/stop").json()["proxy_running"] is False
 
 
 def test_runtime_api_rejects_profile_changes_while_proxy_runs(tmp_path: Path) -> None:

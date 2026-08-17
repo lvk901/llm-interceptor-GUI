@@ -225,6 +225,14 @@ def _parse_session_timestamp(session_id: str) -> datetime | None:
         return None
 
 
+def _natural_identifier_key(identifier: str) -> tuple[tuple[int, int | str], ...]:
+    """Sort suffixed session directories numerically instead of lexicographically."""
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", identifier)
+    )
+
+
 def _parse_split_filename_timestamp(filename: str) -> datetime | None:
     """Parse timestamps embedded in split request/response filenames."""
     match = SPLIT_FILE_TIMESTAMP_RE.match(filename)
@@ -912,7 +920,7 @@ def create_app(watch_manager: WatchManager, runtime: ProxyRuntime | None = None)
                 sessions.append(entry.summary)
 
         state._session_cache = new_cache
-        sessions.sort(key=lambda session: (session.timestamp, session.id))
+        sessions.sort(key=lambda session: (session.timestamp, _natural_identifier_key(session.id)))
         return sessions
 
     @app.get("/api/sessions/{session_id}", response_model=SessionOverview)

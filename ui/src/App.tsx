@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { EmptyState } from './components/layout/EmptyState';
 import { ExchangeDetailsPane } from './components/layout/ExchangeDetailsPane';
 import { MemoizedRequestsPane } from './components/layout/RequestsPane';
@@ -27,12 +27,14 @@ const App: React.FC = () => {
   const {
     sessionsWidth,
     requestsWidth,
+    layoutRef,
     isSessionsCollapsed,
     setIsSessionsCollapsed,
     isRequestsCollapsed,
     setIsRequestsCollapsed,
     startResizingSessions,
     startResizingRequests,
+    isResizing,
   } = useResizablePanels();
 
   const {
@@ -62,6 +64,11 @@ const App: React.FC = () => {
     if (annotations[selectedSessionId]) return;
     void ensureLoaded(selectedSessionId);
   }, [annotations, ensureLoaded, selectedSessionId]);
+
+  const handleSelectSession = useCallback((sessionId: string) => {
+    setSystemPromptFilter(null);
+    setSelectedSessionId(sessionId);
+  }, [setSelectedSessionId]);
 
   const filteredExchanges = useMemo(() => {
     if (!currentSession) return [];
@@ -96,7 +103,7 @@ const App: React.FC = () => {
           onChangeView={setView}
         />
       )}
-      <main className="flex min-h-0 flex-1">
+      <main ref={layoutRef} className="flex min-h-0 min-w-0 flex-1">
         {view === 'settings' && runtime ? (
           <SettingsPage runtime={runtime} isBusy={isRuntimeBusy} onSetSiteProfiles={setSiteProfiles} onSaveSettings={updateSettings} />
         ) : sessionList.length === 0 ? (
@@ -113,11 +120,12 @@ const App: React.FC = () => {
           <SessionsSidebar
             width={sessionsWidth}
             isCollapsed={isSessionsCollapsed}
+            isResizing={isResizing === 'sessions'}
             setIsCollapsed={setIsSessionsCollapsed}
             onStartResize={startResizingSessions}
             sessionList={sessionList}
             selectedSessionId={selectedSessionId}
-            onSelectSession={setSelectedSessionId}
+            onSelectSession={handleSelectSession}
             isDarkMode={isDarkMode}
             onToggleTheme={toggleTheme}
             isNewestFirst={isNewestFirst}
@@ -130,6 +138,7 @@ const App: React.FC = () => {
           <MemoizedRequestsPane
             width={requestsWidth}
             isCollapsed={isRequestsCollapsed}
+            isResizing={isResizing === 'requests'}
             setIsCollapsed={setIsRequestsCollapsed}
             onStartResize={startResizingRequests}
             currentSessionName={currentSession?.name}

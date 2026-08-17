@@ -180,6 +180,16 @@ class WindowsSystemProxy:
             return self.status()
         snapshot = self._load_snapshot()
         if not snapshot:
+            # A damaged snapshot must not leave Windows pointing to a stopped LLI proxy.
+            current = self._read_values()
+            current_server = current["ProxyServer"].value if current["ProxyServer"].exists else None
+            enabled = bool(current["ProxyEnable"].value) if current["ProxyEnable"].exists else False
+            if enabled and self._managed_server and current_server == self._managed_server:
+                import winreg
+
+                self._write_values({"ProxyEnable": RegistryValue(True, 0, winreg.REG_DWORD)})
+                self._notify_settings_changed()
+            self._managed_server = None
             return self.status()
 
         server, saved_values = snapshot

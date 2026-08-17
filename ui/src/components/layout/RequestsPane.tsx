@@ -19,8 +19,9 @@ import { Tooltip } from '../common/Tooltip';
 export const RequestsPane: React.FC<{
   width: number;
   isCollapsed: boolean;
-  setIsCollapsed: (v: boolean) => void;
-  onStartResize: (e: React.MouseEvent) => void;
+  isResizing: boolean;
+  setIsCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
+  onStartResize: (e: React.PointerEvent<HTMLDivElement>) => void;
 
   currentSessionName?: string;
   filteredExchanges: NormalizedExchange[];
@@ -37,6 +38,7 @@ export const RequestsPane: React.FC<{
 }> = ({
   width,
   isCollapsed,
+  isResizing,
   setIsCollapsed,
   onStartResize,
   currentSessionName,
@@ -77,10 +79,9 @@ export const RequestsPane: React.FC<{
     [filteredExchanges]
   );
 
-  // Memoize callback functions to prevent unnecessary re-renders
   const handleToggleCollapse = useCallback(() => {
-    setIsCollapsed(!isCollapsed);
-  }, [isCollapsed, setIsCollapsed]);
+    setIsCollapsed((collapsed) => !collapsed);
+  }, [setIsCollapsed]);
 
   const handleClearFilter = useCallback(() => {
     setSystemPromptFilter(null);
@@ -248,7 +249,9 @@ export const RequestsPane: React.FC<{
   return (
     <div
       style={{ width: isCollapsed ? '48px' : width }}
-      className="flex-shrink-0 border-r border-gray-200 dark:border-slate-800 bg-gray-50/50 dark:bg-[#0f172a] flex flex-col relative transition-all duration-300 ease-in-out"
+      className={`flex-shrink-0 border-r border-gray-200 dark:border-slate-800 bg-gray-50/50 dark:bg-[#0f172a] flex flex-col relative ${
+        isResizing ? 'transition-none select-none' : 'transition-[width] duration-200 ease-out'
+      }`}
     >
       {/* Requests Header */}
       <div
@@ -329,8 +332,10 @@ export const RequestsPane: React.FC<{
       {/* Resizer Handle */}
       {!isCollapsed && (
         <div
-          className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-blue-500/50 transition-colors z-10 flex items-center justify-center group"
-          onMouseDown={onStartResize}
+          className={`absolute top-0 -right-1 w-2 h-full cursor-col-resize touch-none z-10 flex items-center justify-center group ${
+            isResizing ? 'bg-blue-500/50' : 'hover:bg-blue-500/50 transition-colors'
+          }`}
+          onPointerDown={onStartResize}
         >
           <div className="w-[1px] h-full bg-gray-200 dark:bg-slate-800 group-hover:bg-blue-500"></div>
         </div>

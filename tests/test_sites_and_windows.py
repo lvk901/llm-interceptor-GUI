@@ -82,7 +82,7 @@ class MemorySystemProxy(WindowsSystemProxy):
         return deepcopy(self.values)
 
     def _write_values(self, values: dict[str, RegistryValue]) -> None:
-        self.values = deepcopy(values)
+        self.values.update(deepcopy(values))
 
     def _notify_settings_changed(self) -> None:
         pass
@@ -109,3 +109,13 @@ def test_system_proxy_preserves_user_changes_made_while_active(tmp_path: Path) -
 
     assert proxy.values["ProxyServer"].value == "http=custom:8080"
     assert not proxy.state_path.exists()
+
+
+def test_system_proxy_disables_lli_proxy_if_snapshot_is_missing(tmp_path: Path) -> None:
+    proxy = MemorySystemProxy(tmp_path / "proxy.json")
+    proxy.activate("127.0.0.1", 9090)
+    proxy._clear_snapshot()
+
+    proxy.deactivate()
+
+    assert proxy.values["ProxyEnable"].value == 0

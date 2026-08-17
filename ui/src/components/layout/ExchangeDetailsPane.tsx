@@ -360,7 +360,7 @@ export const ExchangeDetailsPane: React.FC<{
   };
 
   return (
-    <div className="flex-1 flex flex-col bg-white dark:bg-[#0f172a] relative">
+    <div className="min-w-0 flex-1 flex flex-col bg-white dark:bg-[#0f172a] relative">
       {currentExchange ? (
         <>
           {/* Header */}

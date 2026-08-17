@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Session, SessionSummary, WatchStatus, NormalizedExchange } from '../types';
 import { mergeExchangeDetail, normalizeExchangeDetail, normalizeSessionOverview } from '../utils';
+import { orderSessionSummaries } from '../utils/sessionOrder';
 
 export function useSessions(options: { apiBase: string; pollMs?: number; isNewestFirst?: boolean }) {
   const { apiBase, pollMs = 2000, isNewestFirst = false } = options;
@@ -246,11 +247,10 @@ export function useSessions(options: { apiBase: string; pollMs?: number; isNewes
       return;
     }
 
-    const hasSelection =
-      selectedSessionId && sessionList.some((session) => session.id === selectedSessionId);
+    const hasSelection = selectedSessionId && sessionList.some((session) => session.id === selectedSessionId);
     if (!hasSelection) {
-      const fallbackIndex = isNewestFirst ? sessionList.length - 1 : 0;
-      setSelectedSessionId(sessionList[fallbackIndex].id);
+      const orderedSessions = orderSessionSummaries(sessionList, isNewestFirst);
+      setSelectedSessionId(orderedSessions[0].id);
     }
   }, [isNewestFirst, sessionList, selectedSessionId]);
 
