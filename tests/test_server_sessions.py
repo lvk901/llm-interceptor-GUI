@@ -5,12 +5,55 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from lli.server import create_app
+from lli.server import (
+    _extract_request_tool_names,
+    _extract_response_tool_names,
+    _extract_system_prompt_key,
+    _is_openai_format,
+    create_app,
+)
 from lli.watch import WatchManager
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_responses_api_request_and_output_metadata_are_recognized() -> None:
+    request = {
+        "model": "gpt-5",
+        "instructions": "Follow the repository policy.",
+        "input": [{"type": "message", "role": "user", "content": "Inspect this code."}],
+        "tools": [
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {"type": "object"},
+            }
+        ],
+    }
+    response = {
+        "object": "response",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Done."}],
+            },
+            {
+                "type": "function_call",
+                "name": "read_file",
+                "call_id": "call_1",
+                "arguments": '{"path":"README.md"}',
+            },
+        ],
+    }
+
+    assert _is_openai_format(request)
+    assert _extract_system_prompt_key(request)
+    assert _extract_request_tool_names(request) == ["read_file"]
+    assert _extract_response_tool_names(response) == ["read_file"]
 
 
 def test_api_sessions_include_duration_and_total_latency(tmp_path: Path) -> None:

@@ -13,8 +13,42 @@ from lli.config import FilterConfig
 from lli.logger import get_logger
 from lli.sites import get_model_site_patterns
 
-VERSIONED_API_PATH_RE = re.compile(r"/(?:openai/)?v\d+(?:beta)?(?:/|$)", re.IGNORECASE)
-LLM_PAYLOAD_KEYS = frozenset({"messages", "input", "prompt", "tools", "max_tokens", "stream"})
+# Keep address-only relay recognition narrow. A version prefix is common on
+# ordinary REST, feed, and media APIs, so it is not sufficient evidence of LLM
+# traffic by itself. Non-standard LLM routes can still be recognized from their
+# request body (model + a known prompt/input field) below.
+LLM_VERSIONED_API_PATH_RE = re.compile(
+    r"/(?:openai/)?v\d+(?:beta)?/"
+    r"(?:chat/completions?|responses?|completions?|embeddings?|messages?|complete|"
+    r"generateContent|streamGenerateContent|"
+    r"images/generations?|audio/(?:transcriptions?|speech)|moderations?|"
+    r"models/[^/?#]+:(?:generateContent|streamGenerateContent|embedContent|countTokens))"
+    r"(?:[/?:]|$)",
+    re.IGNORECASE,
+)
+# Some AI services use unversioned routes and send parameters in the query
+# string (or no request body at all). Match complete path segments only so
+# similarly named media endpoints such as ``generate-thumbnail`` stay out.
+LLM_PATH_HINT_RE = re.compile(
+    r"(?:^|/)(?:chat|completion|completions|responses?|embeddings?|generate(?:content)?|"
+    r"inference|infer|assistant|copilot|transcript(?:ion)?|(?:audio/)?speech)(?:[/?:]|$)|"
+    r"(?:^|/|[-_])summar(?:y|ize)(?:[/?:_-]|$)",
+    re.IGNORECASE,
+)
+# Backward-compatible name for callers that imported the old module constant.
+VERSIONED_API_PATH_RE = LLM_VERSIONED_API_PATH_RE
+LLM_PAYLOAD_KEYS = frozenset(
+    {
+        "messages",
+        "input",
+        "instructions",
+        "prompt",
+        "tools",
+        "contents",
+        "content",
+        "query",
+    }
+)
 
 
 class URLFilter:
@@ -51,8 +85,15 @@ class URLFilter:
         # Glob patterns (user-provided via --include)
         self.include_globs: list[str] = list(config.include_globs)
         self.exclude_globs: list[str] = list(config.exclude_globs)
-        self.auto_detect_api_paths = config.auto_detect_api_paths
+        # Keep the config reference so the desktop runtime can toggle relay
+        # recognition without rebuilding the active mitmproxy addon.
+        self._config = config
         self._logger = get_logger()
+
+    @property
+    def auto_detect_api_paths(self) -> bool:
+        """Return the current relay-recognition setting."""
+        return self._config.auto_detect_api_paths
 
     def should_capture(self, url: str, body: object | None = None) -> bool:
         """
@@ -105,8 +146,17 @@ class URLFilter:
         if not self.auto_detect_api_paths:
             return False
 
-        # Most OpenAI-compatible relays expose paths such as /v1/chat/completions.
-        if VERSIONED_API_PATH_RE.search(url):
+        # Most OpenAI-compatible relays expose one of the standard LLM routes,
+        # such as /v1/chat/completions or /v1/responses.
+        path = url.partition("?")[0].partition("#")[0]
+        if LLM_VERSIONED_API_PATH_RE.search(url):
+            return True
+
+        # Unversioned path hints are useful for body-less GET-style AI APIs.
+        # When a JSON body is available, require the stronger model/payload
+        # evidence below so an ordinary POST route named ``/inference`` is not
+        # captured merely because of its path.
+        if body is None and LLM_PATH_HINT_RE.search(path):
             return True
 
         if not isinstance(body, Mapping):
@@ -156,32 +206,31 @@ class URLFilter:
 # Common LLM API endpoints for reference
 KNOWN_LLM_ENDPOINTS = {
     "anthropic": [
-        r".*api\.anthropic\.com/v1/messages.*",
-        r".*api\.anthropic\.com/v1/complete.*",
+        r".*api\.anthropic\.com/v1/(?:messages?|complete)(?:[/?:].*)?$",
     ],
     "openai": [
-        r".*api\.openai\.com/v1/chat/completions.*",
-        r".*api\.openai\.com/v1/completions.*",
-        r".*api\.openai\.com/v1/embeddings.*",
+        r".*api\.openai\.com/v1/(?:chat/completions?|responses?|completions?|embeddings?|"
+        r"images/generations?|audio/(?:transcriptions?|speech)|moderations?)(?:[/?:].*)?$",
     ],
     "google": [
-        r".*generativelanguage\.googleapis\.com/v1.*",
-        r".*generativelanguage\.googleapis\.com/v1beta.*",
+        r".*generativelanguage\.googleapis\.com/v1(?:beta)?/(?:generateContent|"
+        r"streamGenerateContent|models/[^/?#:]+:(?:generateContent|streamGenerateContent|"
+        r"embedContent|countTokens))(?:[/?:].*)?$",
     ],
     "together": [
-        r".*api\.together\.xyz/v1/.*",
+        r".*api\.together\.xyz/v1/(?:chat/completions?|completions?|embeddings?)(?:[/?:].*)?$",
     ],
     "groq": [
-        r".*api\.groq\.com/openai/v1/.*",
+        r".*api\.groq\.com/openai/v1/(?:chat/completions?|completions?|embeddings?)(?:[/?:].*)?$",
     ],
     "mistral": [
-        r".*api\.mistral\.ai/v1/.*",
+        r".*api\.mistral\.ai/v1/(?:chat/completions?|fim/completions?|embeddings?)(?:[/?:].*)?$",
     ],
     "cohere": [
-        r".*api\.cohere\.ai/v1/.*",
+        r".*api\.cohere\.ai/v1/(?:chat|generate|embed|rerank)(?:[/?:].*)?$",
     ],
     "deepseek": [
-        r".*api\.deepseek\.com/v1/.*",
+        r".*api\.deepseek\.com/v1/(?:chat/completions?|completions?)(?:[/?:].*)?$",
     ],
 }
 

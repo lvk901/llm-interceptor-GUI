@@ -32,8 +32,14 @@ def main() -> None:
 
     config = load_config()
     config.proxy.host = "127.0.0.1"
-    setup_logger(config.logging.level)
-    watch_manager = WatchManager(output_dir=get_default_trace_dir(), port=config.proxy.port)
+    trace_dir = get_default_trace_dir()
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    # Keep a persistent diagnostic trail so proxy timing can be inspected after
+    # reproducing a slow media load from the desktop application.
+    if not config.logging.log_file:
+        config.logging.log_file = str(trace_dir / "runtime.log")
+    setup_logger(config.logging.level, config.logging.log_file)
+    watch_manager = WatchManager(output_dir=trace_dir, port=config.proxy.port)
     runtime = ProxyRuntime(config, watch_manager)
     runtime.system_proxy.recover_stale_proxy()
 

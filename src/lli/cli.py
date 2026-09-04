@@ -541,6 +541,10 @@ def watch(
     # Determine output directory
     if output_dir is None:
         output_dir = str(get_default_trace_dir())
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    if not config.logging.log_file:
+        config.logging.log_file = str(output_path / "runtime.log")
 
     # Setup logging
     setup_logger(config.logging.level, config.logging.log_file)

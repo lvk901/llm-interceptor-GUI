@@ -22,6 +22,12 @@ const asString = (value: unknown, fallback = ''): string =>
 const isOpenAIFormat = (body: unknown): boolean => {
   if (!isRecord(body)) return false;
 
+  // OpenAI Responses requests carry input/instructions at the top level
+  // instead of the Chat Completions messages array.
+  if (typeof body.model === 'string' && ('input' in body || 'instructions' in body || 'response_format' in body)) {
+    return true;
+  }
+
   // Check for OpenAI specific tool format
   const tools = body.tools;
   if (
@@ -122,31 +128,39 @@ const normalizeOpenAIRequest = (
 ): { system: string | undefined; messages: NormalizedMessage[]; tools: NormalizedTool[]; model: string } => {
   const model = isRecord(body) ? asString(body.model, 'unknown-model') : 'unknown-model';
 
-  const rawMessages = isRecord(body) && Array.isArray(body.messages) ? body.messages : [];
+  const bodyRecord = isRecord(body) ? body : {};
+  const rawMessages = Array.isArray(bodyRecord.messages)
+    ? bodyRecord.messages
+    : Array.isArray(bodyRecord.input)
+      ? bodyRecord.input
+      : typeof bodyRecord.input === 'string'
+        ? [{ role: 'user', content: bodyRecord.input }]
+      : [];
 
   // 1. Extract System Prompt (OpenAI puts it in messages)
   const systemMessages = rawMessages.filter(
     (m) => isRecord(m) && (m.role === 'system' || m.role === 'developer')
   );
-  const system =
-    systemMessages.length > 0
-      ? systemMessages
-          .map((m) => (isRecord(m) ? extractProviderTextContent(m.content) : ''))
-          .filter(Boolean)
-          .join('\n')
-      : undefined;
+  const instructionText = 'instructions' in bodyRecord
+    ? extractProviderTextContent(bodyRecord.instructions).trim()
+    : '';
+  const messageSystemText = systemMessages
+    .map((m) => (isRecord(m) ? extractProviderTextContent(m.content) : ''))
+    .filter(Boolean)
+    .join('\n');
+  const system = [instructionText, messageSystemText].filter(Boolean).join('\n') || undefined;
 
   // 2. Normalize Tools
-  const toolsSrc = isRecord(body) && Array.isArray(body.tools) ? body.tools : [];
+  const toolsSrc = Array.isArray(bodyRecord.tools) ? bodyRecord.tools : [];
   const tools: NormalizedTool[] = toolsSrc
     .map((t) => {
       if (!isRecord(t)) return null;
       // OpenAI Tool format: { type: 'function', function: { name, description, parameters } }
-      if (t.type === 'function' && isRecord(t.function)) {
-        const fn = t.function;
+      if (t.type === 'function') {
+        const fn = isRecord(t.function) ? t.function : t;
         const tool: NormalizedTool = {
           name: asString(fn.name, 'unknown'),
-          input_schema: fn.parameters,
+          input_schema: fn.parameters ?? fn.input_schema,
         };
         if (typeof fn.description === 'string') {
           tool.description = fn.description;
@@ -160,8 +174,19 @@ const normalizeOpenAIRequest = (
   // 3. Normalize Messages (Convert OpenAI structure to "Normalized" Anthropic-like structure for UI)
   const messages: NormalizedMessage[] = rawMessages
     .filter((m) => !(isRecord(m) && (m.role === 'system' || m.role === 'developer')))
-    .map((m) => {
+    .flatMap((m) => {
       const role = isRecord(m) ? asString(m.role, 'user') : 'user';
+
+      if (isRecord(m) && m.type === 'function_call') {
+        let input: unknown = {};
+        const argsRaw = asString(m.arguments, '{}');
+        try { input = JSON.parse(argsRaw); } catch { input = { error: 'Failed to parse arguments', raw: argsRaw }; }
+        return [{ role: 'assistant', content: [{ type: 'tool_use', name: asString(m.name, 'unknown'), input, id: m.call_id ?? m.id }] }];
+      }
+
+      if (isRecord(m) && m.type === 'function_call_output') {
+        return [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: m.call_id ?? m.id, content: m.output }] }];
+      }
 
       // Handle Assistant with Tool Calls
       if (role === 'assistant' && isRecord(m) && Array.isArray(m.tool_calls)) {
@@ -188,12 +213,12 @@ const normalizeOpenAIRequest = (
             id: tc.id,
           });
         });
-        return { role: 'assistant', content: contentBlocks };
+        return [{ role: 'assistant', content: contentBlocks }];
       }
 
       // Handle Tool Results (OpenAI 'tool' role -> Normalized 'user' role with tool_result block)
       if (role === 'tool' && isRecord(m)) {
-        return {
+        return [{
           role: 'user',
           content: [
             {
@@ -202,14 +227,24 @@ const normalizeOpenAIRequest = (
               content: m.content,
             },
           ],
-        };
+        }];
       }
 
       // Standard User/Assistant Text
-      return {
+      const messageContent = isRecord(m) ? m.content : m;
+      // Responses API input messages use `input_text`; the chat renderer uses
+      // the provider-neutral `text` block shape.
+      const normalizedContent = Array.isArray(messageContent)
+        ? messageContent.map((block) =>
+            isRecord(block) && block.type === 'input_text'
+              ? { ...block, type: 'text' }
+              : block
+          )
+        : messageContent;
+      return [{
         role: role as NormalizedMessage['role'],
-        content: isRecord(m) ? m.content : m,
-      };
+        content: normalizedContent,
+      }];
     });
 
   return { system, messages, tools, model };
@@ -330,6 +365,43 @@ const normalizeExchangePair = (
             responseContent = msg.content;
           }
         }
+      } else if (isRecord(rawResponse?.body) && Array.isArray(rawResponse.body.output)) {
+        const blocks: Record<string, unknown>[] = [];
+        rawResponse.body.output.forEach((item) => {
+          if (!isRecord(item)) return;
+          if (item.type === 'function_call') {
+            const argsRaw = asString(item.arguments, '{}');
+            let input: unknown = {};
+            try {
+              input = JSON.parse(argsRaw);
+            } catch {
+              input = { error: 'Failed to parse arguments', raw: argsRaw };
+            }
+            blocks.push({
+              type: 'tool_use',
+              name: asString(item.name, 'unknown'),
+              input,
+              id: item.call_id ?? item.id,
+            });
+            return;
+          }
+          if (item.type !== 'message' || !Array.isArray(item.content)) return;
+          item.content.forEach((part) => {
+            if (!isRecord(part)) return;
+            if (part.type === 'output_text' && typeof part.text === 'string') {
+              blocks.push({ type: 'text', text: part.text });
+            } else if (part.type === 'refusal' && typeof part.refusal === 'string') {
+              blocks.push({ type: 'text', text: part.refusal });
+            }
+          });
+        });
+        if (blocks.length > 0) {
+          responseContent = blocks;
+        } else if (typeof rawResponse.body.output_text === 'string') {
+          responseContent = rawResponse.body.output_text;
+        }
+      } else if (isRecord(rawResponse?.body) && typeof rawResponse.body.output_text === 'string') {
+        responseContent = rawResponse.body.output_text;
       }
     } else if (isRecord(rawResponse?.body)) {
       responseContent = 'content' in rawResponse.body ? (rawResponse.body as Record<string, unknown>).content : rawResponse.body;

@@ -580,33 +580,48 @@ class StreamMerger:
             output = []
             body["output"] = output
 
-        # A completed response normally contains the full output. Reconstruct it
-        # from deltas only when an upstream relay omits that final output object.
-        if not output and (output_items or content_parts or text_deltas or completed_text):
+        # A completed event usually contains complete output, but relays can omit
+        # items or leave output_text content empty. Fill only those gaps from the
+        # streamed events so valid completed text remains authoritative.
+        if output_items or content_parts or text_deltas or completed_text:
             for output_index, item in sorted(output_items.items()):
+                was_missing = output_index >= len(output)
                 while len(output) <= output_index:
                     output.append({"type": "message", "role": "assistant", "content": []})
-                output[output_index] = item
+                if was_missing or not isinstance(output[output_index], dict):
+                    output[output_index] = item
 
             for (output_index, content_index), part in sorted(content_parts.items()):
                 item = self._ensure_responses_output_item(output, output_index)
-                content = item.setdefault("content", [])
+                content = item.get("content")
+                if not isinstance(content, list):
+                    content = []
+                    item["content"] = content
+                was_missing = content_index >= len(content)
                 while len(content) <= content_index:
                     content.append({"type": "output_text", "text": ""})
-                content[content_index] = part
+                if was_missing or not isinstance(content[content_index], dict):
+                    content[content_index] = part
 
-            for key in set(text_deltas) | set(completed_text):
+            for key in sorted(set(text_deltas) | set(completed_text)):
                 output_index, content_index = key
                 item = self._ensure_responses_output_item(output, output_index)
-                content = item.setdefault("content", [])
+                content = item.get("content")
+                if not isinstance(content, list):
+                    content = []
+                    item["content"] = content
                 while len(content) <= content_index:
                     content.append({"type": "output_text", "text": ""})
                 part = content[content_index]
                 if not isinstance(part, dict):
                     part = {"type": "output_text", "text": ""}
                     content[content_index] = part
-                part["type"] = part.get("type", "output_text")
-                part["text"] = completed_text.get(key, "".join(text_deltas[key]))
+
+                existing_text = part.get("text")
+                if isinstance(existing_text, str) and existing_text:
+                    continue
+                part["type"] = "output_text"
+                part["text"] = completed_text.get(key) or "".join(text_deltas[key])
 
         response_record: dict[str, Any] = {
             "type": "response",

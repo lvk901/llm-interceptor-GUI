@@ -46,6 +46,28 @@ const TABS = [
 type TabId = (typeof TABS)[number]['id'];
 const DEFAULT_BRUSH_VISIBLE_POINTS = 50;
 
+type BrushRange = { startIndex: number; endIndex: number };
+
+const resolveBrushRange = (range: BrushRange | null, itemCount: number): BrushRange | null => {
+  if (itemCount === 0) {
+    return null;
+  }
+
+  const endIndex = itemCount - 1;
+  if (!range) {
+    return {
+      startIndex: Math.max(0, itemCount - DEFAULT_BRUSH_VISIBLE_POINTS),
+      endIndex,
+    };
+  }
+
+  const startIndex = Math.min(Math.max(0, range.startIndex), endIndex);
+  return {
+    startIndex,
+    endIndex: Math.min(Math.max(startIndex, range.endIndex), endIndex),
+  };
+};
+
 const formatSecondsFromMs = (ms: number, maximumFractionDigits = 3) =>
   (ms / 1000).toLocaleString(undefined, { maximumFractionDigits });
 const formatInteger = (value: number) => value.toLocaleString();
@@ -280,30 +302,9 @@ export const ExchangeDetailsPane: React.FC<{
     };
   }, [toolCallCounts.length, toolTimelineData.length, sessionExchanges.length]);
 
-  useEffect(() => {
-    if (sessionExchanges.length === 0) {
-      setLatencyBrushRange(null);
-      setTokenBrushRange(null);
-      setToolBrushRange(null);
-      return;
-    }
-
-    const endIndex = sessionExchanges.length - 1;
-    const startIndex = Math.max(0, sessionExchanges.length - DEFAULT_BRUSH_VISIBLE_POINTS);
-    setLatencyBrushRange({ startIndex, endIndex });
-    setTokenBrushRange({ startIndex, endIndex });
-  }, [sessionExchanges]);
-
-  useEffect(() => {
-    if (toolTimelineData.length === 0) {
-      setToolBrushRange(null);
-      return;
-    }
-
-    const endIndex = toolTimelineData.length - 1;
-    const startIndex = Math.max(0, toolTimelineData.length - DEFAULT_BRUSH_VISIBLE_POINTS);
-    setToolBrushRange({ startIndex, endIndex });
-  }, [toolTimelineData]);
+  const resolvedLatencyBrushRange = resolveBrushRange(latencyBrushRange, sessionExchanges.length);
+  const resolvedTokenBrushRange = resolveBrushRange(tokenBrushRange, sessionExchanges.length);
+  const resolvedToolBrushRange = resolveBrushRange(toolBrushRange, toolTimelineData.length);
 
   const handleLatencyBrushChange = useCallback(
     (range: { startIndex?: number; endIndex?: number }) => {
@@ -620,14 +621,14 @@ export const ExchangeDetailsPane: React.FC<{
                             activeDot={{ r: 4 }}
                             isAnimationActive={false}
                           />
-                          {latencyBrushRange && (
+                          {resolvedLatencyBrushRange && (
                             <Brush
                               dataKey="requestIndex"
                               height={30}
                               travellerWidth={10}
                               stroke="#6366f1"
-                              startIndex={latencyBrushRange.startIndex}
-                              endIndex={latencyBrushRange.endIndex}
+                              startIndex={resolvedLatencyBrushRange.startIndex}
+                              endIndex={resolvedLatencyBrushRange.endIndex}
                               onChange={handleLatencyBrushChange}
                             />
                           )}
@@ -706,14 +707,14 @@ export const ExchangeDetailsPane: React.FC<{
                               fill="#8b5cf6"
                               isAnimationActive={false}
                             />
-                            {tokenBrushRange && (
+                            {resolvedTokenBrushRange && (
                               <Brush
                                 dataKey="requestIndex"
                                 height={30}
                                 travellerWidth={10}
                                 stroke="#8b5cf6"
-                                startIndex={tokenBrushRange.startIndex}
-                                endIndex={tokenBrushRange.endIndex}
+                                startIndex={resolvedTokenBrushRange.startIndex}
+                                endIndex={resolvedTokenBrushRange.endIndex}
                                 onChange={handleTokenBrushChange}
                               />
                             )}
@@ -831,14 +832,14 @@ export const ExchangeDetailsPane: React.FC<{
                               legendType="none"
                               shape="circle"
                             />
-                            {toolBrushRange && (
+                            {resolvedToolBrushRange && (
                               <Brush
                                 dataKey="eventIndex"
                                 height={30}
                                 travellerWidth={10}
                                 stroke="#f97316"
-                                startIndex={toolBrushRange.startIndex}
-                                endIndex={toolBrushRange.endIndex}
+                                startIndex={resolvedToolBrushRange.startIndex}
+                                endIndex={resolvedToolBrushRange.endIndex}
                                 onChange={handleToolBrushChange}
                               />
                             )}

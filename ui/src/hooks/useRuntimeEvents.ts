@@ -16,16 +16,16 @@ export function useRuntimeEvents(options: { apiBase: string; enabled: boolean })
   const [observability, setObservability] = useState<RuntimeObservability>(EMPTY_OBSERVABILITY);
 
   useEffect(() => {
-    if (!enabled) {
-      setObservability(EMPTY_OBSERVABILITY);
-      return;
-    }
+    if (!enabled) return;
 
     const source = new EventSource(`${apiBase}/api/runtime/events`);
+    let receivedFirstEvent = false;
     const onRuntimeEvent = (event: Event) => {
       const payload = JSON.parse((event as MessageEvent<string>).data) as RuntimeObservability;
       setObservability((previous) => {
-        const mergedLogs = [...previous.logs, ...payload.logs]
+        const priorLogs = receivedFirstEvent ? previous.logs : [];
+        receivedFirstEvent = true;
+        const mergedLogs = [...priorLogs, ...payload.logs]
           .filter((entry, index, entries) => index === 0 || entry.sequence !== entries[index - 1].sequence)
           .slice(-500);
         return { ...payload, logs: mergedLogs };
@@ -36,5 +36,5 @@ export function useRuntimeEvents(options: { apiBase: string; enabled: boolean })
     return () => source.close();
   }, [apiBase, enabled]);
 
-  return observability;
+  return enabled ? observability : EMPTY_OBSERVABILITY;
 }

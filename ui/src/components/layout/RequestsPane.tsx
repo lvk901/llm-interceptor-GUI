@@ -54,10 +54,12 @@ export const RequestsPane: React.FC<{
 }) => {
   const [editingRequestNote, setEditingRequestNote] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const [scrollTop, setScrollTop] = useState(0);
+  const [scrollPosition, setScrollPosition] = useState({ key: '', top: 0 });
   const [viewportHeight, setViewportHeight] = useState(0);
-  const [heightVersion, setHeightVersion] = useState(0);
-  const itemHeightsRef = useRef<Record<string, number>>({});
+  const [heightCache, setHeightCache] = useState<{
+    key: string;
+    heights: Record<string, number>;
+  }>({ key: '', heights: {} });
 
   const estimatedRowHeight = isCollapsed ? 48 : 156;
   const overscanRows = isCollapsed ? 12 : 6;
@@ -87,9 +89,14 @@ export const RequestsPane: React.FC<{
     setSystemPromptFilter(null);
   }, [setSystemPromptFilter]);
 
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(e.currentTarget.scrollTop);
-  }, []);
+  const scrollTop = scrollPosition.key === exchangeListKey ? scrollPosition.top : 0;
+
+  const handleScroll = useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      setScrollPosition({ key: exchangeListKey, top: e.currentTarget.scrollTop });
+    },
+    [exchangeListKey]
+  );
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -107,21 +114,24 @@ export const RequestsPane: React.FC<{
   }, []);
 
   useEffect(() => {
-    itemHeightsRef.current = {};
-    setHeightVersion((version) => version + 1);
-    setScrollTop(0);
     scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'auto' });
   }, [exchangeListKey, isCollapsed]);
 
   const handleItemHeightChange = useCallback((exchangeId: string, height: number) => {
     const nextHeight = Math.ceil(height);
-    if (itemHeightsRef.current[exchangeId] === nextHeight) {
-      return;
-    }
+    setHeightCache((current) => {
+      const currentHeights = current.key === exchangeListKey ? current.heights : {};
+      if (currentHeights[exchangeId] === nextHeight) {
+        return current;
+      }
+      return { key: exchangeListKey, heights: { ...currentHeights, [exchangeId]: nextHeight } };
+    });
+  }, [exchangeListKey]);
 
-    itemHeightsRef.current[exchangeId] = nextHeight;
-    setHeightVersion((version) => version + 1);
-  }, []);
+  const itemHeights = useMemo(
+    () => (heightCache.key === exchangeListKey ? heightCache.heights : {}),
+    [exchangeListKey, heightCache]
+  );
 
   // Memoize computed values
   const requestCount = useMemo(() => filteredExchanges.length, [filteredExchanges.length]);
@@ -143,14 +153,16 @@ export const RequestsPane: React.FC<{
   }, [filteredExchanges]);
 
   const itemMetrics = useMemo(() => {
-    let offset = 0;
-    return filteredExchanges.map((exchange) => {
-      const height = itemHeightsRef.current[exchange.id] ?? estimatedRowHeight;
-      const metric = { id: exchange.id, top: offset, height, bottom: offset + height };
-      offset += height;
-      return metric;
-    });
-  }, [estimatedRowHeight, filteredExchanges, heightVersion]);
+    return filteredExchanges.reduce<Array<{ id: string; top: number; height: number; bottom: number }>>(
+      (metrics, exchange) => {
+        const height = itemHeights[exchange.id] ?? estimatedRowHeight;
+        const top = metrics.length > 0 ? metrics[metrics.length - 1].bottom : 0;
+        metrics.push({ id: exchange.id, top, height, bottom: top + height });
+        return metrics;
+      },
+      []
+    );
+  }, [estimatedRowHeight, filteredExchanges, itemHeights]);
 
   const totalHeight = itemMetrics.length > 0 ? itemMetrics[itemMetrics.length - 1].bottom : 0;
 

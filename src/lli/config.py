@@ -26,14 +26,19 @@ class FilterConfig(BaseModel):
     # Patterns to include (regex patterns, used internally for built-in providers)
     include_patterns: list[str] = Field(
         default_factory=lambda: [
-            r".*api\.anthropic\.com.*",
-            r".*api\.openai\.com.*",
-            r".*generativelanguage\.googleapis\.com.*",
-            r".*api\.together\.xyz.*",
-            r".*api\.groq\.com.*",
-            r".*api\.mistral\.ai.*",
-            r".*api\.cohere\.ai.*",
-            r".*api\.deepseek\.com.*",
+            # Keep provider recognition endpoint-specific. Provider hosts also
+            # serve files, health checks, and other large non-LLM responses.
+            r".*api\.anthropic\.com/v1/(?:messages?|complete)(?:[/?:].*)?$",
+            r".*api\.openai\.com/v1/(?:chat/completions?|responses?|completions?|embeddings?|"
+            r"images/generations?|audio/(?:transcriptions?|speech)|moderations?)(?:[/?:].*)?$",
+            r".*generativelanguage\.googleapis\.com/v1(?:beta)?/(?:generateContent|"
+            r"streamGenerateContent|models/[^/?#:]+:(?:generateContent|streamGenerateContent|"
+            r"embedContent|countTokens))(?:[/?:].*)?$",
+            r".*api\.together\.xyz/v1/(?:chat/completions?|completions?|embeddings?)(?:[/?:].*)?$",
+            r".*api\.groq\.com/openai/v1/(?:chat/completions?|completions?|embeddings?)(?:[/?:].*)?$",
+            r".*api\.mistral\.ai/v1/(?:chat/completions?|fim/completions?|embeddings?)(?:[/?:].*)?$",
+            r".*api\.cohere\.ai/v1/(?:chat|generate|embed|rerank)(?:[/?:].*)?$",
+            r".*api\.deepseek\.com/v1/(?:chat/completions?|completions?)(?:[/?:].*)?$",
         ]
     )
     # Patterns to exclude (regex patterns, takes precedence)
@@ -44,7 +49,7 @@ class FilterConfig(BaseModel):
     exclude_globs: list[str] = Field(default_factory=list)
     # Built-in browser based AI model websites to capture in addition to API providers.
     site_profiles: list[str] = Field(default_factory=lambda: list(DEFAULT_MODEL_SITE_IDS))
-    # Recognize versioned API paths and LLM-shaped JSON payloads on unknown relay domains.
+    # Recognize standard LLM endpoints and LLM-shaped JSON payloads on unknown relay domains.
     auto_detect_api_paths: bool = True
 
 
@@ -188,6 +193,7 @@ def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
         "LLI_PROXY_PORT": ("proxy", "port"),
         "LLI_OUTPUT_FILE": ("storage", "output_file"),
         "LLI_LOG_LEVEL": ("logging", "level"),
+        "LLI_LOG_FILE": ("logging", "log_file"),
         "LLI_UPSTREAM_CA_CERT": ("proxy", "upstream_ca_cert"),
     }
 

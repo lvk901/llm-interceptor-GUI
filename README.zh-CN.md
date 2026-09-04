@@ -10,11 +10,14 @@ LLM Interceptor 是一个本地代理抓包与分析工具，用于查看 AI 编
 
 - 代理层捕获 Anthropic、OpenAI、Google、DeepSeek、Groq、Mistral、Together 等常见模型 API。
 - 支持 OpenAI Chat Completions 和 Responses API 的流式 SSE；可还原 Codex 使用的 `response.output_text.delta` 等事件。
-- 支持 OpenAI 兼容中转站：根据 `/v1/*` 地址、请求体中的 `model` 与 `messages`、`input`、`prompt` 等特征识别，不依赖 OpenAI 官方域名。
+- 支持 OpenAI 兼容中转站：根据标准 LLM 端点和请求体中的 `model` 与 `messages`、`input`、`prompt` 等特征识别，不依赖 OpenAI 官方域名；普通 `/v1/*` REST 接口不会被捕获。
 - 支持 ChatGPT、Claude、Gemini、DeepSeek、Kimi、通义千问、豆包、智谱清言等网页模型的 API 路径配置。
 - Windows 桌面版提供代理开关、录制开关、HTTPS 证书安装、设置页、实时日志和后端心跳。
 - 会话数据自动整理为请求/响应对，Web UI 可查看对话、系统提示词、工具调用、统计信息和原始 JSON。
-- 自动脱敏常见密钥字段；非模型流量和大媒体下载会直接透传，不写入模型会话。
+- 自动脱敏常见密钥字段；未匹配流量、只读资讯响应和大媒体下载以流式方式转发，不写入模型会话。
+- LLM 分析优先于旁路：标准模型端点和带有 AI 请求特征的 JSON 即使响应很大或采用流式传输也会捕获分析；普通视频、资讯、CDN、下载等非 LLM 流量在所有网站上统一排除，不局限于哔哩哔哩。
+- B 站 `grpc.biliapi.net` 的非 LLM protobuf 控制流量使用 TLS 隧道旁路，以保留 HTTP/2 Trailer 兼容性；视频总结等 AI 请求仍按 LLM 规则捕获分析。
+- 代理诊断日志会记录去除查询参数的端点、路由判定、响应头、流式模式和耗时，可在 LIVE RUNTIME 面板及 `runtime.log` 中查看。
 
 ## Windows 桌面版
 
@@ -58,7 +61,7 @@ codex
 - 代理监听端口。代理运行时不能修改端口。
 - 日志级别。
 - 模型网站捕获配置。代理运行时不能修改网站配置。
-- 地址识别：启用后会识别 `/v1/*` 和符合 OpenAI 兼容特征的请求，适合自定义域名或 API 中转站。
+- 地址识别：启用后会识别标准 LLM 端点和符合 OpenAI 兼容特征的请求，适合自定义域名或 API 中转站；普通 `/v1/*` REST 接口不会被捕获。
 
 首页底部的 **LIVE RUNTIME** 显示后端心跳、代理运行时长和实时日志。该面板默认折叠，展开状态会在下次启动时保留。
 
@@ -148,9 +151,14 @@ lli watch --upstream-ca-cert /path/to/company-ca.pem
 ```text
 /v1/chat/completions
 /v1/responses
+/v1/messages
+/v1/embeddings
+/v1/images/generations
+/v1/audio/transcriptions
+/v1beta/models/<model>:generateContent
 ```
 
-对于非标准路径，LLI 还会检查 JSON 请求是否同时具有 `model` 与 `messages`、`input` 或 `prompt` 等模型调用特征。若中转站的路径和请求格式都非常规，可手动追加匹配规则：
+LLI 不会把所有 `/v1/*` 地址都当作 LLM 接口；对于非标准路径，还会检查 JSON 请求是否同时具有 `model` 与 `messages`、`input` 或 `prompt` 等模型调用特征。若中转站的路径和请求格式都非常规，可手动追加匹配规则：
 
 ```bash
 lli watch --include "*api.example.com*"
@@ -161,6 +169,8 @@ lli watch --include "*api.example.com*"
 ```bash
 lli watch --include "*relay.example.com*" --exclude "*relay.example.com/health*"
 ```
+
+排查视频加载缓慢时，请先在桌面版把日志级别设为 `DEBUG`，再复现一次。持久化日志位于 traces 输出目录下的 `runtime.log`，不会记录 URL 查询参数或响应体。查看 `[FLOW]` 日志中的 `ttfb` 与 `total`，即可区分上游等待和响应传输耗时。
 
 ## Web UI
 

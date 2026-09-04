@@ -12,6 +12,7 @@ import mimetypes
 import re
 import shutil
 import sys
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -269,6 +270,14 @@ def _is_openai_format(body: object) -> bool:
     if not isinstance(body, dict):
         return False
 
+    # OpenAI Responses requests use top-level input/instructions rather than
+    # Chat Completions messages. Require a model to avoid classifying unrelated
+    # JSON payloads that happen to contain an input field.
+    if isinstance(body.get("model"), str) and (
+        "input" in body or "instructions" in body or "response_format" in body
+    ):
+        return True
+
     tools = body.get("tools")
     if isinstance(tools, list) and any(
         isinstance(tool, dict) and tool.get("type") == "function" for tool in tools
@@ -321,10 +330,15 @@ def _extract_system_prompt_key(body: object) -> str:
         return ""
 
     if _is_openai_format(body):
+        instructions = body.get("instructions")
+        instruction_parts = (
+            [_stringify_content(instructions).strip()] if instructions is not None else []
+        )
         messages = body.get("messages")
         if not isinstance(messages, list):
-            return ""
+            messages = body.get("input") if isinstance(body.get("input"), list) else []
         parts: list[str] = []
+        parts.extend(part for part in instruction_parts if part)
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -348,9 +362,19 @@ def _extract_request_tool_names(body: object) -> list[str]:
 
     names: list[str] = []
     if _is_openai_format(body):
+        tools = body.get("tools")
+        if isinstance(tools, list):
+            for tool in tools:
+                if not isinstance(tool, dict):
+                    continue
+                function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+                name = function.get("name") if isinstance(function, dict) else None
+                if isinstance(name, str) and name.strip():
+                    names.append(name)
+
         messages = body.get("messages")
         if not isinstance(messages, list):
-            return names
+            messages = body.get("input") if isinstance(body.get("input"), list) else []
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -364,6 +388,10 @@ def _extract_request_tool_names(body: object) -> list[str]:
                 if not isinstance(function, dict):
                     continue
                 name = function.get("name")
+                if isinstance(name, str) and name.strip():
+                    names.append(name)
+            if message.get("type") == "function_call":
+                name = message.get("name")
                 if isinstance(name, str) and name.strip():
                     names.append(name)
         return names
@@ -392,6 +420,17 @@ def _extract_response_tool_names(body: object) -> list[str]:
         return []
 
     names: list[str] = []
+    output = body.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "function_call":
+                continue
+            name = item.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name)
+        if names:
+            return names
+
     choices = body.get("choices")
     if isinstance(choices, list):
         for choice in choices:
@@ -795,18 +834,22 @@ def create_app(watch_manager: WatchManager, runtime: ProxyRuntime | None = None)
         )
 
     @app.get("/api/runtime", response_model=RuntimeStatus)
-    def get_runtime_status():
+    def get_runtime_status() -> RuntimeStatus:
         return runtime_response(get_runtime().snapshot())
 
     @app.get("/api/runtime/observability", response_model=RuntimeObservabilityStatus)
-    def get_runtime_observability(after: int = Query(default=0, ge=0)):
+    def get_runtime_observability(
+        after: int = Query(default=0, ge=0),
+    ) -> RuntimeObservabilityStatus:
         return observability_response(get_runtime().observability(after))
 
     @app.get("/api/runtime/events")
-    async def stream_runtime_events(after: int = Query(default=0, ge=0)):
+    async def stream_runtime_events(
+        after: int = Query(default=0, ge=0),
+    ) -> StreamingResponse:
         runtime = get_runtime()
 
-        async def event_stream():
+        async def event_stream() -> AsyncIterator[str]:
             sequence = after
             while True:
                 payload = observability_response(runtime.observability(sequence))
@@ -822,42 +865,42 @@ def create_app(watch_manager: WatchManager, runtime: ProxyRuntime | None = None)
         )
 
     @app.post("/api/runtime/proxy/start", response_model=RuntimeStatus)
-    def start_runtime_proxy():
+    def start_runtime_proxy() -> RuntimeStatus:
         try:
             return runtime_response(get_runtime().start_proxy())
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/runtime/proxy/stop", response_model=RuntimeStatus)
-    def stop_runtime_proxy():
+    def stop_runtime_proxy() -> RuntimeStatus:
         try:
             return runtime_response(get_runtime().stop_proxy())
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/runtime/recording/start", response_model=RuntimeStatus)
-    def start_runtime_recording():
+    def start_runtime_recording() -> RuntimeStatus:
         try:
             return runtime_response(get_runtime().start_recording())
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/runtime/recording/stop", response_model=RuntimeStatus)
-    def stop_runtime_recording():
+    def stop_runtime_recording() -> RuntimeStatus:
         try:
             return runtime_response(get_runtime().stop_recording())
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.put("/api/runtime/site-profiles", response_model=RuntimeStatus)
-    def update_runtime_site_profiles(selection: SiteProfileSelection):
+    def update_runtime_site_profiles(selection: SiteProfileSelection) -> RuntimeStatus:
         try:
             return runtime_response(get_runtime().set_site_profiles(selection.profile_ids))
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.put("/api/runtime/settings", response_model=RuntimeStatus)
-    def update_runtime_settings(settings: RuntimeSettingsUpdate):
+    def update_runtime_settings(settings: RuntimeSettingsUpdate) -> RuntimeStatus:
         try:
             return runtime_response(
                 get_runtime().update_settings(
@@ -870,7 +913,7 @@ def create_app(watch_manager: WatchManager, runtime: ProxyRuntime | None = None)
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/runtime/certificate/install", response_model=RuntimeStatus)
-    def install_runtime_certificate():
+    def install_runtime_certificate() -> RuntimeStatus:
         try:
             return runtime_response(get_runtime().install_certificate())
         except RuntimeError as exc:

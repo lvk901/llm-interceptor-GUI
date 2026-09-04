@@ -13,7 +13,8 @@ def main() -> None:
     try:
         import PyInstaller.__main__
     except ImportError as exc:
-        raise SystemExit("Install desktop build dependencies with: uv sync --extra desktop") from exc
+        message = "Install desktop build dependencies with: uv sync --extra desktop"
+        raise SystemExit(message) from exc
 
     root = Path(__file__).parent
     static_dir = root / "src" / "lli" / "static"

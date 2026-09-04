@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import monotonic
@@ -15,6 +17,10 @@ from lli.config import get_cert_info
 
 INTERNET_SETTINGS_PATH = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
 PROXY_VALUE_NAMES = ("ProxyEnable", "ProxyServer", "ProxyOverride", "AutoConfigURL")
+LLI_PROXY_OVERRIDE = "localhost;127.0.0.1;<local>"
+LLI_PROXY_SERVER_RE = re.compile(
+    r"^http=127\.0\.0\.1:(?P<port>\d{1,5});https=127\.0\.0\.1:(?P=port)$"
+)
 
 
 def _hidden_subprocess_options() -> dict[str, Any]:
@@ -129,13 +135,52 @@ class WindowsSystemProxy:
             "managed_server": server,
             "values": {name: asdict(value) for name, value in values.items()},
         }
-        self.state_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
+        temp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.state_path.parent,
+                prefix=f".{self.state_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+                json.dump(payload, temp_file, ensure_ascii=True)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())
+            os.replace(temp_path, self.state_path)
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except FileNotFoundError:
+                    pass
 
     def _clear_snapshot(self) -> None:
         try:
             self.state_path.unlink()
         except FileNotFoundError:
             pass
+
+    @staticmethod
+    def _looks_like_lli_proxy(values: dict[str, RegistryValue]) -> bool:
+        """Recognize only the exact local configuration written by this application."""
+        server = values["ProxyServer"]
+        override = values["ProxyOverride"]
+        auto_config = values["AutoConfigURL"]
+        match = (
+            LLI_PROXY_SERVER_RE.fullmatch(server.value)
+            if server.exists and isinstance(server.value, str)
+            else None
+        )
+        return (
+            match is not None
+            and 1 <= int(match.group("port")) <= 65535
+            and override.exists
+            and override.value == LLI_PROXY_OVERRIDE
+            and not auto_config.exists
+        )
 
     def status(self) -> SystemProxyStatus:
         if not self.supported:
@@ -145,7 +190,12 @@ class WindowsSystemProxy:
         server = values["ProxyServer"].value if values["ProxyServer"].exists else None
         snapshot = self._load_snapshot()
         managed_server = self._managed_server or (snapshot[0] if snapshot else None)
-        return SystemProxyStatus(True, enabled, enabled and server == managed_server, server)
+        return SystemProxyStatus(
+            True,
+            enabled,
+            enabled and server == managed_server and self._looks_like_lli_proxy(values),
+            server,
+        )
 
     def activate(self, host: str, port: int) -> SystemProxyStatus:
         if not self.supported:
@@ -165,7 +215,7 @@ class WindowsSystemProxy:
                 "ProxyServer": RegistryValue(True, server, winreg.REG_SZ),
                 "ProxyOverride": RegistryValue(
                     True,
-                    "localhost;127.0.0.1;<local>",
+                    LLI_PROXY_OVERRIDE,
                     winreg.REG_SZ,
                 ),
                 "AutoConfigURL": RegistryValue(False),
@@ -180,11 +230,19 @@ class WindowsSystemProxy:
             return self.status()
         snapshot = self._load_snapshot()
         if not snapshot:
-            # A damaged snapshot must not leave Windows pointing to a stopped LLI proxy.
+            # A new process has no in-memory managed_server. Only disable a stale
+            # proxy when the complete LLI registry fingerprint is still present;
+            # do not disturb a later user-provided proxy configuration.
             current = self._read_values()
             current_server = current["ProxyServer"].value if current["ProxyServer"].exists else None
             enabled = bool(current["ProxyEnable"].value) if current["ProxyEnable"].exists else False
-            if enabled and self._managed_server and current_server == self._managed_server:
+            managed_server_matches = (
+                self._managed_server
+                and current_server == self._managed_server
+                and self._looks_like_lli_proxy(current)
+            )
+            stale_lli_proxy = self._managed_server is None and self._looks_like_lli_proxy(current)
+            if enabled and (managed_server_matches or stale_lli_proxy):
                 import winreg
 
                 self._write_values({"ProxyEnable": RegistryValue(True, 0, winreg.REG_DWORD)})
@@ -196,7 +254,7 @@ class WindowsSystemProxy:
         current = self._read_values()
         current_server = current["ProxyServer"].value if current["ProxyServer"].exists else None
         enabled = bool(current["ProxyEnable"].value) if current["ProxyEnable"].exists else False
-        if enabled and current_server == server:
+        if enabled and current_server == server and self._looks_like_lli_proxy(current):
             self._write_values(saved_values)
             self._notify_settings_changed()
         self._managed_server = None

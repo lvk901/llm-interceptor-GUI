@@ -12,6 +12,7 @@ import re
 import time
 from collections.abc import Callable
 from contextlib import redirect_stdout
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
@@ -46,9 +47,66 @@ STREAM_PASSTHROUGH_CONTENT_TYPES = (
     "image/",
     "video/",
     "application/octet-stream",
+    "application/grpc",
     "application/vnd.apple.mpegurl",
     "application/dash+xml",
 )
+BILIBILI_AI_PATH_RE = re.compile(
+    r"(?:^|/)(?:ai|aigc|assistant|copilot|chat|completion|generate|llm|model|"
+    r"summary|summarize|transcript|ask)(?:[/_.?=-]|$)",
+    re.IGNORECASE,
+)
+BILIBILI_FEED_PATH_RE = re.compile(
+    r"(?:^|/)(?:feed|dynamic|recommend|recommendation|rcmd|popular|region)(?:[/_.?=-]|$)",
+    re.IGNORECASE,
+)
+BILIBILI_MEDIA_PATH_RE = re.compile(
+    r"(?:^|/)(?:playurl|playurlconf|upgcxcode|download|segment|dash)(?:[/_.?=-]|$)|"
+    r"\.(?:m3u8|mpd|mp4|ts|m4s|flv)(?:$|\?)",
+    re.IGNORECASE,
+)
+AI_BODY_KEYS = frozenset(
+    {
+        "messages",
+        "input",
+        "instructions",
+        "prompt",
+        "tools",
+        "contents",
+        "content",
+        "query",
+    }
+)
+
+# Bilibili's protobuf RPC endpoints rely on HTTP/2 trailers that cannot be
+# safely MITM'd by the local proxy. They are media/control traffic, not AI
+# endpoints; tunnel this host so playback keeps the native gRPC connection.
+NON_LLM_TUNNEL_HOSTS = ("grpc.biliapi.net",)
+
+
+def _get_ignore_hosts(config: LLIConfig) -> list[str]:
+    """Combine user bypass rules with safe non-LLM protocol tunnels."""
+    ignore_hosts = list(config.proxy.no_proxy or [])
+    for host in NON_LLM_TUNNEL_HOSTS:
+        if host not in ignore_hosts:
+            ignore_hosts.append(host)
+    return ignore_hosts
+
+
+@dataclass
+class _FlowDiagnostics:
+    """Timing and routing metadata for one flow, excluding request contents."""
+
+    token: str
+    started_at: float
+    method: str
+    endpoint: str
+    route: str
+    request_bytes: int
+    captured: bool
+    headers_at: float | None = None
+    completed_at: float | None = None
+    streamed: bool = False
 
 
 class WatchAddon:
@@ -84,6 +142,10 @@ class WatchAddon:
         self._request_ids: dict[int, str] = {}
         self._request_sessions: dict[int, str | None] = {}
         self._capture_decisions: dict[int, bool] = {}
+        self._bilibili_ai_decisions: dict[int, bool] = {}
+        self._bilibili_passthrough_decisions: dict[int, bool] = {}
+        self._streamed_passthrough: set[int] = set()
+        self._flow_diagnostics: dict[int, _FlowDiagnostics] = {}
         self._passthrough_log_times: dict[str, float] = {}
 
     def request(self, flow: http.HTTPFlow) -> None:
@@ -91,23 +153,94 @@ class WatchAddon:
         url = flow.request.pretty_url
         method = flow.request.method
 
-        self._logger.debug("Intercepted request: %s %s", method, url)
+        self._logger.debug("Intercepted request: %s %s", method, self._safe_endpoint(url))
 
-        should_capture = self.url_filter.should_capture(url)
         body = None
-        if not should_capture and self._should_parse_unmatched_request(flow):
+        # An unversioned AI path is only sufficient evidence when the request is
+        # genuinely body-less. Passing an empty mapping for body-bearing flows
+        # prevents a large, unparsed upload from being captured (or bypassed)
+        # solely because its path contains ``inference`` or ``summary``.
+        should_capture = self.url_filter.should_capture(url, {} if flow.request.content else None)
+        if self._is_bilibili_url(url) and self._should_parse_unmatched_request(flow):
+            # Bilibili uses generic /v1 paths for both media/feed APIs and AI APIs.
+            # Inspect only small JSON requests so the distinction does not require
+            # buffering media or large uploads.
+            body = self._parse_body(flow.request.content, flow.request.headers.get("content-type"))
+        if not should_capture and body is None and self._should_parse_unmatched_request(flow):
             # Inspect JSON relay payloads without decoding uploads or binary application traffic.
             body = self._parse_body(flow.request.content, flow.request.headers.get("content-type"))
             should_capture = self.url_filter.should_capture(url, body)
 
+        flow_id = id(flow)
+        bilibili_ai = self._is_bilibili_ai_request(url, body)
+        self._bilibili_ai_decisions[flow_id] = bilibili_ai
+        safe_bilibili_passthrough = (
+            self._is_bilibili_url(url)
+            and not bilibili_ai
+            and self._is_bilibili_passthrough_request(url)
+            and flow.request.method.upper() in {"GET", "HEAD", "OPTIONS"}
+            and (not flow.request.content or isinstance(body, dict))
+        )
+        self._bilibili_passthrough_decisions[flow_id] = safe_bilibili_passthrough
+        if bilibili_ai:
+            # AI endpoints must remain observable even when their payload does not
+            # use the usual model/messages shape and URLFilter would not match it.
+            should_capture = True
+        elif (
+            self._is_bilibili_passthrough_request(url)
+            and flow.request.content
+            and body is None
+            and "json" in flow.request.headers.get("content-type", "").lower()
+        ):
+            # An oversized JSON body cannot be inspected safely at request time;
+            # retain the flow so a possible AI call is not silently bypassed.
+            should_capture = True
+        if (
+            should_capture
+            and safe_bilibili_passthrough
+        ):
+            should_capture = False
+
+        route = self._diagnostic_route(url, should_capture, bilibili_ai, bool(flow.request.content))
+        self._flow_diagnostics[flow_id] = _FlowDiagnostics(
+            token=f"{flow_id:x}"[-10:],
+            started_at=time.monotonic(),
+            method=method,
+            endpoint=self._safe_endpoint(url),
+            route=route,
+            request_bytes=len(flow.request.content or b""),
+            captured=should_capture,
+        )
+        self._logger.debug(
+            "[FLOW] request id=%s route=%s %s %s body=%dB",
+            self._flow_diagnostics[flow_id].token,
+            route,
+            method,
+            self._safe_endpoint(url),
+            len(flow.request.content or b""),
+        )
+        hostname = (urlsplit(url).hostname or "").casefold()
+        if hostname.startswith("grpc.") or hostname.endswith(".grpc.biliapi.net"):
+            self._logger.info(
+                "[FLOW-GRPC] request id=%s route=%s %s body=%dB %s",
+                self._flow_diagnostics[flow_id].token,
+                route,
+                method,
+                len(flow.request.content or b""),
+                self._safe_endpoint(url),
+            )
+
         if not should_capture:
+            # Keep the decision explicit: URLFilter may recognize the same generic
+            # /v1 path again in responseheaders/response, but this flow is known
+            # to be ordinary Bilibili traffic.
+            self._capture_decisions[flow_id] = False
             self._log_passthrough_activity(method, url)
-            self._logger.debug("URL not matched, skipping: %s", url)
+            self._logger.debug("URL not matched, skipping: %s", self._safe_endpoint(url))
             return
 
         # Generate IDs, capture timing, and emit live logs only for model traffic.
         request_id = str(uuid4())
-        flow_id = id(flow)
         self._request_ids[flow_id] = request_id
         self._request_times[flow_id] = time.time()
         self._capture_decisions[flow_id] = True
@@ -120,8 +253,13 @@ class WatchAddon:
         # Parse headers (with masking)
         headers = self._mask_headers(dict(flow.request.headers))
 
+        # Relay detection may already have parsed this body. All captured requests
+        # still need their payload persisted, including those matched by URL.
+        if body is None:
+            body = self._parse_body(flow.request.content, flow.request.headers.get("content-type"))
+
         # Mask sensitive body fields if configured
-        if body and isinstance(body, dict):
+        if isinstance(body, dict):
             body = self._mask_body_fields(body)
 
         # Create request record
@@ -145,8 +283,17 @@ class WatchAddon:
         status_code = flow.response.status_code
 
         flow_id = id(flow)
+        if flow_id in self._streamed_passthrough:
+            self._logger.debug("Completed streamed passthrough: %s", url)
+            self._streamed_passthrough.discard(flow_id)
+            self._log_flow_completion(flow)
+            self._cleanup_flow(flow_id)
+            return
+
         # Reuse the request's decision when JSON payload recognition triggered capture.
-        should_capture = self._capture_decisions.get(flow_id, self.url_filter.should_capture(url))
+        should_capture = self._capture_decisions.get(flow_id)
+        if should_capture is None:
+            should_capture = self.url_filter.should_capture(url)
 
         if not should_capture:
             # Cleanup and exit early if not capturing
@@ -218,21 +365,228 @@ class WatchAddon:
             self.watch_manager.write_record(record, session_id=session_id)
 
         # Cleanup
+        self._log_flow_completion(flow)
         self._cleanup_flow(flow_id)
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         """Handle response headers (called before body is received)."""
         flow_id = id(flow)
-        should_capture = self._capture_decisions.get(
-            flow_id, self.url_filter.should_capture(flow.request.pretty_url)
+        should_capture = self._capture_decisions.get(flow_id)
+        if should_capture is None:
+            should_capture = self.url_filter.should_capture(flow.request.pretty_url)
+        will_stream = (
+            not should_capture
+            and (
+                self._should_stream_passthrough(flow)
+                or self._should_stream_bilibili_non_ai(flow)
+                or self._should_stream_unmatched_json(flow)
+            )
         )
-        if not should_capture and self._should_stream_passthrough(flow):
+        diagnostic = self._flow_diagnostics.get(flow_id)
+        if diagnostic is not None:
+            diagnostic.headers_at = time.monotonic()
+            diagnostic.streamed = will_stream
+            content_type = flow.response.headers.get("content-type", "")
+            content_length = flow.response.headers.get("content-length", "?")
+            content_range = flow.response.headers.get("content-range", "-")
+            ttfb_ms = (diagnostic.headers_at - diagnostic.started_at) * 1000
+            self._logger.debug(
+                "[FLOW] headers id=%s route=%s status=%s ttfb=%.0fms stream=%s "
+                "type=%s length=%s range=%s",
+                diagnostic.token,
+                diagnostic.route,
+                getattr(flow.response, "status_code", "?"),
+                ttfb_ms,
+                will_stream,
+                content_type or "-",
+                content_length,
+                content_range,
+            )
+            if not should_capture and ttfb_ms >= 500:
+                self._logger.info(
+                    "[FLOW-SLOW] headers id=%s %s ttfb=%.0fms stream=%s type=%s",
+                    diagnostic.token,
+                    diagnostic.endpoint,
+                    ttfb_ms,
+                    will_stream,
+                    content_type or "-",
+                )
+            if not should_capture and content_type.lower().startswith("application/grpc"):
+                self._logger.info(
+                    "[FLOW-GRPC] headers id=%s status=%s ttfb=%.0fms stream=%s type=%s",
+                    diagnostic.token,
+                    getattr(flow.response, "status_code", "?"),
+                    ttfb_ms,
+                    will_stream,
+                    content_type or "-",
+                )
+        if will_stream:
             flow.response.stream = True
+            self._streamed_passthrough.add(flow_id)
             return
 
         content_type = flow.response.headers.get("content-type", "")
         if should_capture and "text/event-stream" in content_type:
             self._logger.debug("Detected streaming response for %s", flow.request.pretty_url)
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Discard request tracking when mitmproxy ends a flow with an error."""
+        diagnostic = self._flow_diagnostics.get(id(flow))
+        if diagnostic is not None:
+            elapsed_ms = (time.monotonic() - diagnostic.started_at) * 1000
+            header_ms = (
+                (diagnostic.headers_at - diagnostic.started_at) * 1000
+                if diagnostic.headers_at is not None
+                else None
+            )
+            self._logger.warning(
+                "[FLOW-ERROR] id=%s %s elapsed=%.0fms headers=%s stream=%s error=%s",
+                diagnostic.token,
+                diagnostic.endpoint,
+                elapsed_ms,
+                f"{header_ms:.0f}ms" if header_ms is not None else "?",
+                diagnostic.streamed,
+                getattr(getattr(flow, "error", None), "msg", None) or "unknown",
+            )
+        self._streamed_passthrough.discard(id(flow))
+        self._cleanup_flow(id(flow))
+
+    def done(self, flow: http.HTTPFlow) -> None:
+        """Release any residual flow state after a streamed response completes."""
+        if id(flow) in self._flow_diagnostics:
+            self._log_flow_completion(flow)
+        self._streamed_passthrough.discard(id(flow))
+        self._cleanup_flow(id(flow))
+
+    @staticmethod
+    def _safe_endpoint(url: str) -> str:
+        """Return a query-free endpoint suitable for diagnostic logs."""
+        parsed = urlsplit(url)
+        host = parsed.hostname or "unknown-host"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        path = parsed.path or "/"
+        if len(path) > 240:
+            path = f"{path[:237]}..."
+        return f"{parsed.scheme or 'http'}://{host}{path}"
+
+    @classmethod
+    def _diagnostic_route(
+        cls,
+        url: str,
+        should_capture: bool,
+        bilibili_ai: bool,
+        has_request_body: bool,
+    ) -> str:
+        if should_capture or bilibili_ai:
+            return "LLM"
+        if cls._is_bilibili_url(url) and cls._is_bilibili_passthrough_request(url):
+            return "MEDIA"
+        if not has_request_body:
+            return "PASSTHROUGH"
+        return "UNMATCHED"
+
+    def _log_flow_completion(self, flow: http.HTTPFlow) -> None:
+        """Log end-to-end timing without touching or serializing response bodies."""
+        diagnostic = self._flow_diagnostics.get(id(flow))
+        if diagnostic is None or diagnostic.completed_at is not None:
+            return
+        diagnostic.completed_at = time.monotonic()
+        header_ms = (
+            (diagnostic.headers_at - diagnostic.started_at) * 1000
+            if diagnostic.headers_at is not None
+            else None
+        )
+        total_ms = (diagnostic.completed_at - diagnostic.started_at) * 1000
+        body = getattr(getattr(flow, "response", None), "content", None)
+        body_bytes = len(body) if isinstance(body, bytes) else 0
+        response = getattr(flow, "response", None)
+        content_type = response.headers.get("content-type", "-") if response else "-"
+        content_length = response.headers.get("content-length", "?") if response else "?"
+        self._logger.debug(
+            "[FLOW] complete id=%s route=%s status=%s total=%.0fms headers=%s "
+            "stream=%s body=%dB declared=%s type=%s",
+            diagnostic.token,
+            diagnostic.route,
+            getattr(response, "status_code", "?"),
+            total_ms,
+            f"{header_ms:.0f}ms" if header_ms is not None else "?",
+            diagnostic.streamed,
+            body_bytes,
+            content_length,
+            content_type,
+        )
+        if not diagnostic.captured and total_ms >= 500:
+            self._logger.info(
+                "[FLOW-SLOW] complete id=%s %s total=%.0fms headers=%s stream=%s body=%dB",
+                diagnostic.token,
+                diagnostic.endpoint,
+                total_ms,
+                f"{header_ms:.0f}ms" if header_ms is not None else "?",
+                diagnostic.streamed,
+                body_bytes,
+            )
+
+    @staticmethod
+    def _is_bilibili_url(url: str) -> bool:
+        """Return whether a URL belongs to Bilibili or its video CDN."""
+        hostname = urlsplit(url).hostname
+        if not hostname:
+            return False
+        hostname = hostname.casefold().rstrip(".")
+        return any(
+            hostname == suffix or hostname.endswith(f".{suffix}")
+            for suffix in (
+                "bilibili.com",
+                "bilibili.tv",
+                "bilibili.co",
+                "bilivideo.com",
+                "bilivideo.cn",
+                "acgvideo.com",
+            )
+        )
+
+    @classmethod
+    def _is_bilibili_ai_request(cls, url: str, body: Any) -> bool:
+        """Identify Bilibili AI calls that must remain captured and buffered."""
+        if not cls._is_bilibili_url(url):
+            return False
+        path = urlsplit(url).path
+        if BILIBILI_AI_PATH_RE.search(path):
+            return True
+        return (
+            isinstance(body, dict)
+            and isinstance(body.get("model"), str)
+            and bool(AI_BODY_KEYS.intersection(body))
+        )
+
+    @classmethod
+    def _is_bilibili_passthrough_request(cls, url: str) -> bool:
+        """Identify ordinary Bilibili media/feed endpoints for zero-copy streaming."""
+        path = urlsplit(url).path
+        return bool(BILIBILI_FEED_PATH_RE.search(path) or BILIBILI_MEDIA_PATH_RE.search(path))
+
+    def _should_stream_bilibili_non_ai(self, flow: http.HTTPFlow) -> bool:
+        """Stream ordinary Bilibili media/feed responses while retaining AI analysis."""
+        url = flow.request.pretty_url
+        if not self._is_bilibili_url(url):
+            return False
+        flow_id = id(flow)
+        if flow_id in self._bilibili_passthrough_decisions:
+            return self._bilibili_passthrough_decisions[flow_id]
+        if flow.request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+            return False
+        if self._bilibili_ai_decisions.get(flow_id, self._is_bilibili_ai_request(url, None)):
+            return False
+        path = urlsplit(url).path
+        if self._is_bilibili_passthrough_request(url):
+            return not flow.request.content
+        content_type = flow.response.headers.get("content-type", "").lower()
+        return (
+            not flow.request.content
+            and "json" in content_type
+            and bool(BILIBILI_FEED_PATH_RE.search(path))
+        )
 
     @staticmethod
     def _should_parse_unmatched_request(flow: http.HTTPFlow) -> bool:
@@ -256,6 +610,23 @@ class WatchAddon:
             return int(headers.get("content-length", "0")) >= STREAM_PASSTHROUGH_MIN_BYTES
         except ValueError:
             return False
+
+    @staticmethod
+    def _should_stream_unmatched_json(flow: http.HTTPFlow) -> bool:
+        """Stream ordinary read-only JSON responses that were not captured.
+
+        Feed and news APIs commonly return JSON from generic paths (including
+        versioned paths that are not LLM endpoints).  The request phase has
+        already classified the flow as non-LLM; limiting this fallback to
+        body-less read methods keeps POST-based AI requests conservative while
+        avoiding full buffering for ordinary feeds.
+        """
+        if flow.request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+            return False
+        if flow.request.content:
+            return False
+        content_type = flow.response.headers.get("content-type", "").lower()
+        return "json" in content_type
 
     def _log_passthrough_activity(self, method: str, url: str) -> None:
         """Show bounded non-model connection activity without logging every media segment."""
@@ -412,6 +783,9 @@ class WatchAddon:
         self._request_ids.pop(flow_id, None)
         self._request_sessions.pop(flow_id, None)
         self._capture_decisions.pop(flow_id, None)
+        self._bilibili_ai_decisions.pop(flow_id, None)
+        self._bilibili_passthrough_decisions.pop(flow_id, None)
+        self._flow_diagnostics.pop(flow_id, None)
 
 
 def create_watch_proxy_master(
@@ -454,8 +828,10 @@ def create_watch_proxy_master(
         listen_port=config.proxy.port,
         ssl_insecure=config.proxy.ssl_insecure,
     )
-    if config.proxy.no_proxy:
-        opts.update(ignore_hosts=config.proxy.no_proxy)
+    ignore_hosts = _get_ignore_hosts(config)
+    if ignore_hosts:
+        opts.update(ignore_hosts=ignore_hosts)
+        logger.info("Non-LLM tunnel hosts: %s", ", ".join(NON_LLM_TUNNEL_HOSTS))
     if config.proxy.upstream_ca_cert:
         opts.update(
             ssl_verify_upstream_trusted_ca=str(Path(config.proxy.upstream_ca_cert).resolve())

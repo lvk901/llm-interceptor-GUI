@@ -10,11 +10,14 @@ LLM Interceptor is a local proxy and trace analysis tool for inspecting LLM API 
 
 - Capture common LLM APIs including Anthropic, OpenAI, Google, DeepSeek, Groq, Mistral, and Together.
 - Rebuild streamed SSE responses for OpenAI Chat Completions and Responses API, including Codex `response.output_text.delta` events.
-- Recognize OpenAI-compatible relays by `/v1/*` paths and request shape (`model` plus `messages`, `input`, or `prompt`), without requiring an OpenAI hostname.
+- Recognize OpenAI-compatible relays by standard LLM endpoints and request shape (`model` plus `messages`, `input`, or `prompt`), without requiring an OpenAI hostname. Generic `/v1/*` REST paths are not captured.
 - Configure browser-model API profiles for ChatGPT, Claude, Gemini, DeepSeek, Kimi, Qwen, Doubao, and Zhipu Qingyan.
 - Use the Windows desktop app for proxy and recording controls, certificate installation, settings, live logs, and backend heartbeat.
 - Review conversations, system prompts, tool calls, metrics, and raw JSON in the Web UI.
-- Mask common secret fields automatically. Unmatched traffic and large media downloads are streamed through instead of being buffered into model traces.
+- Mask common secret fields automatically. Unmatched traffic, read-only feed responses, and large media downloads are streamed through instead of being buffered into model traces.
+- LLM analysis has priority over passthrough: standard model endpoints and AI-shaped JSON requests remain captured even when their responses are large or streamed. Ordinary video, news, CDN, and download traffic is excluded from capture across sites, not just Bilibili.
+- Non-LLM protobuf control traffic on Bilibili's `grpc.biliapi.net` uses a TLS tunnel to preserve HTTP/2 trailer compatibility; video-summary and other AI requests remain captured by the LLM rules.
+- Proxy diagnostics record query-free endpoints, routing decisions, response headers, stream mode, and timing in the live runtime panel and `runtime.log`.
 
 ## Windows Desktop App
 
@@ -57,7 +60,7 @@ Open the settings page with the button in the upper-right corner. It provides:
 
 - Proxy port and log-level controls. The port cannot change while the proxy is running.
 - Model website profile selection. Profiles cannot change while the proxy is running.
-- Address recognition for `/v1/*` and compatible request bodies, useful for custom domains and API relays.
+- Address recognition for standard LLM endpoints and compatible request bodies, useful for custom domains and API relays. Generic `/v1/*` REST paths are not captured.
 
 The **LIVE RUNTIME** panel at the bottom of the home page shows backend heartbeat, proxy uptime, and live logs. It is collapsed by default and remembers its open/closed state across launches.
 
@@ -145,6 +148,11 @@ Address recognition covers common OpenAI-compatible paths such as:
 ```text
 /v1/chat/completions
 /v1/responses
+/v1/messages
+/v1/embeddings
+/v1/images/generations
+/v1/audio/transcriptions
+/v1beta/models/<model>:generateContent
 ```
 
 LLI also checks JSON request structure for `model` plus LLM input fields. If a relay uses a non-standard path and request format, add an explicit glob:
@@ -158,6 +166,8 @@ Add multiple patterns by repeating `--include`. Exclude endpoints that should no
 ```bash
 lli watch --include "*relay.example.com*" --exclude "*relay.example.com/health*"
 ```
+
+When diagnosing a slow media load, set the desktop log level to `DEBUG` before reproducing it. The persistent log is stored beside the trace output as `runtime.log`; it never includes URL query parameters or response bodies. Look for `[FLOW]` entries and compare `ttfb` with `total` to separate upstream wait from body transfer time.
 
 ## Web UI
 

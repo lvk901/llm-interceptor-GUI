@@ -140,6 +140,13 @@ class TestURLFilter:
         url_filter = URLFilter(config)
         assert url_filter.should_capture("https://api.openai.com/v1/chat/completions")
 
+    def test_provider_download_endpoint_is_not_llm_traffic(self) -> None:
+        """Provider hosts must not make ordinary downloads eligible for capture."""
+        config = FilterConfig()
+        url_filter = URLFilter(config)
+        assert not url_filter.should_capture("https://api.openai.com/v1/files/file-123/content")
+        assert not url_filter.should_capture("https://api.anthropic.com/v1/health")
+
     def test_random_url_not_matched(self) -> None:
         """Test that random URLs are not matched."""
         config = FilterConfig()

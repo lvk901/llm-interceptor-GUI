@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Check, FolderOpen, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import type { RuntimeStatus } from '../../types';
 
@@ -8,16 +8,14 @@ export const SettingsPage: React.FC<{
   onSetSiteProfiles: (profileIds: string[]) => Promise<boolean>;
   onSaveSettings: (settings: { proxyPort: number; logLevel: RuntimeStatus['log_level']; addressRecognition: boolean }) => Promise<boolean>;
 }> = ({ runtime, isBusy, onSetSiteProfiles, onSaveSettings }) => {
-  const [proxyPort, setProxyPort] = useState(runtime.proxy_port);
-  const [logLevel, setLogLevel] = useState<RuntimeStatus['log_level']>(runtime.log_level);
-  const [addressRecognition, setAddressRecognition] = useState(runtime.address_recognition);
+  const [proxyPort, setProxyPort] = useState<number | null>(null);
+  const [logLevel, setLogLevel] = useState<RuntimeStatus['log_level'] | null>(null);
+  const [addressRecognition, setAddressRecognition] = useState<boolean | null>(null);
   const [saved, setSaved] = useState(false);
 
-  useEffect(() => {
-    setProxyPort(runtime.proxy_port);
-    setLogLevel(runtime.log_level);
-    setAddressRecognition(runtime.address_recognition);
-  }, [runtime.address_recognition, runtime.log_level, runtime.proxy_port]);
+  const currentProxyPort = proxyPort ?? runtime.proxy_port;
+  const currentLogLevel = logLevel ?? runtime.log_level;
+  const currentAddressRecognition = addressRecognition ?? runtime.address_recognition;
 
   const toggleProfile = (id: string) => {
     const enabled = new Set(runtime.enabled_site_profiles);
@@ -27,9 +25,18 @@ export const SettingsPage: React.FC<{
   };
 
   const save = async () => {
-    const wasSaved = await onSaveSettings({ proxyPort, logLevel, addressRecognition });
+    const wasSaved = await onSaveSettings({
+      proxyPort: currentProxyPort,
+      logLevel: currentLogLevel,
+      addressRecognition: currentAddressRecognition,
+    });
     setSaved(wasSaved);
-    if (wasSaved) window.setTimeout(() => setSaved(false), 1800);
+    if (wasSaved) {
+      setProxyPort(null);
+      setLogLevel(null);
+      setAddressRecognition(null);
+      window.setTimeout(() => setSaved(false), 1800);
+    }
   };
 
   return (
@@ -40,7 +47,7 @@ export const SettingsPage: React.FC<{
             <div className="font-mono text-[11px] font-semibold tracking-wide text-cyan-700 dark:text-cyan-300">DESKTOP CONFIGURATION</div>
             <h1 className="mt-1 text-2xl font-semibold text-slate-900 dark:text-white">Settings</h1>
           </div>
-          <button type="button" onClick={() => void save()} disabled={isBusy || !Number.isInteger(proxyPort) || proxyPort < 1 || proxyPort > 65535} className="inline-flex h-9 items-center gap-2 bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
+          <button type="button" onClick={() => void save()} disabled={isBusy || !Number.isInteger(currentProxyPort) || currentProxyPort < 1 || currentProxyPort > 65535} className="inline-flex h-9 items-center gap-2 bg-blue-600 px-3 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
             <Check size={15} /> {saved ? 'Saved' : 'Save changes'}
           </button>
         </header>
@@ -50,11 +57,11 @@ export const SettingsPage: React.FC<{
             <SettingsSection title="Proxy">
               <label className="grid max-w-xs gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                 Listening port
-                <input type="number" min="1" max="65535" value={proxyPort} disabled={runtime.proxy_running || isBusy} onChange={(event) => setProxyPort(Number(event.target.value))} className="h-9 border border-slate-300 bg-white px-2 font-mono text-sm outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:disabled:bg-slate-900" />
+                <input type="number" min="1" max="65535" value={currentProxyPort} disabled={runtime.proxy_running || isBusy} onChange={(event) => setProxyPort(Number(event.target.value))} className="h-9 border border-slate-300 bg-white px-2 font-mono text-sm outline-none focus:border-blue-500 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-950 dark:disabled:bg-slate-900" />
               </label>
               <label className="mt-4 grid max-w-xs gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
                 Log level
-                <select value={logLevel} disabled={isBusy} onChange={(event) => setLogLevel(event.target.value as RuntimeStatus['log_level'])} className="h-9 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-blue-500 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950">
+                <select value={currentLogLevel} disabled={isBusy} onChange={(event) => setLogLevel(event.target.value as RuntimeStatus['log_level'])} className="h-9 border border-slate-300 bg-white px-2 text-sm outline-none focus:border-blue-500 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950">
                   <option value="DEBUG">Debug</option>
                   <option value="INFO">Info</option>
                   <option value="WARNING">Warning</option>
@@ -78,12 +85,12 @@ export const SettingsPage: React.FC<{
               <label className="flex max-w-xl items-center gap-3 text-sm text-slate-700 dark:text-slate-200">
                 <input
                   type="checkbox"
-                  checked={addressRecognition}
+                  checked={currentAddressRecognition}
                   disabled={isBusy}
                   onChange={(event) => setAddressRecognition(event.target.checked)}
                   className="h-4 w-4 accent-blue-600"
                 />
-                Address recognition (/v1/* and compatible request bodies)
+                Address recognition (standard LLM endpoints and compatible request bodies)
               </label>
             </SettingsSection>
 

@@ -1053,6 +1053,77 @@ class TestRebuildOpenAIResponsesResponse:
 
         assert result["body"]["object"] == "response"
         assert result["body"]["output"][0]["content"][0]["text"] == "Hello world!"
+        assert result["body"]["output"][0]["content"][0]["annotations"] == []
+
+    def test_fills_empty_completed_output_text_from_done_event(self, tmp_path: Path) -> None:
+        merger = StreamMerger(tmp_path / "in.jsonl", tmp_path / "out.jsonl")
+        completed_response = {
+            "object": "response",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": ""}],
+                }
+            ],
+        }
+
+        result = merger._rebuild_openai_responses_response(
+            "req_123",
+            [
+                {
+                    "content": {
+                        "type": "response.output_text.delta",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": "Hello ",
+                    }
+                },
+                {
+                    "content": {
+                        "type": "response.output_text.done",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "text": "Hello world!",
+                    }
+                },
+                {"content": {"type": "response.completed", "response": completed_response}},
+            ],
+            {},
+        )
+
+        assert result["body"]["output"][0]["content"][0]["text"] == "Hello world!"
+
+    def test_preserves_nonempty_completed_output_text(self, tmp_path: Path) -> None:
+        merger = StreamMerger(tmp_path / "in.jsonl", tmp_path / "out.jsonl")
+        completed_response = {
+            "object": "response",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Authoritative"}],
+                }
+            ],
+        }
+
+        result = merger._rebuild_openai_responses_response(
+            "req_123",
+            [
+                {
+                    "content": {
+                        "type": "response.output_text.delta",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "delta": "Stale text",
+                    }
+                },
+                {"content": {"type": "response.completed", "response": completed_response}},
+            ],
+            {},
+        )
+
+        assert result["body"]["output"][0]["content"][0]["text"] == "Authoritative"
 
 
 class TestStreamMergerIntegration:

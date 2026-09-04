@@ -18,11 +18,11 @@ export function orderSessionSummaries(
   const ordered = [...sessions].sort((left, right) => {
     const timestampDifference = timestampValue(left.timestamp) - timestampValue(right.timestamp);
     if (timestampDifference !== 0) {
-      return timestampDifference;
+      return isNewestFirst ? -timestampDifference : timestampDifference;
     }
 
     return sessionNameCollator.compare(left.id, right.id);
   });
 
-  return isNewestFirst ? ordered.reverse() : ordered;
+  return ordered;
 }
